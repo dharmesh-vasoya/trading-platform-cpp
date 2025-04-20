@@ -1,0 +1,60 @@
+# indicators/CMakeLists.txt
+
+# Define this module's library target (will contain wrappers later)
+add_library(indicators STATIC
+    # Add src/sma_indicator.cpp etc. later
+)
+
+# --- TA-Lib Dependency ---
+FetchContent_MakeAvailable(ta-lib)
+
+# Add ta_libc as a static library target using its source files directly
+# Source files are typically under src/ta_libc/
+file(GLOB TA_LIBC_SOURCES "${ta-lib_SOURCE_DIR}/src/ta_libc/*.c")
+# Headers defining the C API are typically under include/
+# Headers needed internally by ta_libc sources are under src/ta_common/
+# We list sources here; include dirs handle headers.
+
+add_library(ta_libc STATIC ${TA_LIBC_SOURCES})
+
+# Set include directories needed TO BUILD ta_libc and FOR CONSUMERS of ta_libc
+# We need ta_common internally, consumers need include/ta_libc.h
+target_include_directories(ta_libc PUBLIC
+     "${ta-lib_SOURCE_DIR}/include"      # Public API header (ta_libc.h)
+)
+target_include_directories(ta_libc PRIVATE
+     "${ta-lib_SOURCE_DIR}/src/ta_common" # Internal headers (ta_defs.h etc) needed by .c files
+)
+
+# Add compile definition often needed by ta-lib when built statically or embedded
+# Check TA-Lib docs if issues arise, TA_SINGLE_THREAD or others might be needed.
+target_compile_definitions(ta_libc PRIVATE TA_SINGLE_THREAD)
+
+# Suppress potential warnings from external ta-lib C code
+target_compile_options(ta_libc PRIVATE -w) # GCC/Clang
+# For MSVC: target_compile_options(ta_libc PRIVATE /W0)
+
+
+# --- Configure the 'indicators' library target ---
+
+# Add source files for wrappers when they exist
+# target_sources(indicators PRIVATE
+#    src/sma_indicator.cpp
+#    src/rsi_indicator.cpp
+# )
+
+target_include_directories(indicators PUBLIC
+    include # This module's own include dir (for IIndicator.hpp etc.)
+    # No need to explicitly add ta-lib includes here if linking PUBLIC below
+)
+
+target_compile_features(indicators PRIVATE cxx_std_20)
+
+# Link indicators library against core and the compiled ta_libc library
+# Link ta_libc PUBLICLY so consumers of 'indicators' can also find ta_libc.h if needed
+target_link_libraries(indicators PUBLIC
+    core
+    ta_libc # Link our own compiled version
+)
+
+message(STATUS "Configuring indicators module (Compiling TA-Lib)...")

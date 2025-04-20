@@ -1,0 +1,55 @@
+# Build directories
+build/
+**/build/
+logs/
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+
+# Compiled libraries and executables
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+
+# Object files
+*.o
+*.obj
+
+# Dependency directories (if not using FetchContent exclusively)
+third_party/ # Or specific subdirs if needed
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+*.duckdb
+*.duckdb.wal
+
+# Log files
+*.log
+
+# IDE specific files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Secrets / Local Config (NEVER COMMIT THESE)
+config.local
+*.env
+secrets.*
+*.key
+*.pem

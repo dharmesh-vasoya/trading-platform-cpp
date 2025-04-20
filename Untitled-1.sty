@@ -1,0 +1,553 @@
+Building a High-Performance Open-Source Trading Strategy PlatformI. IntroductionThis report outlines the research, technology evaluation, architectural design, and implementation plan for developing an open-source trading strategy platform, conceptually similar to Zerodha Streak but with enhanced features and a focus on performance using a C++ backend. The primary goal is to create a modular, extensible, and high-performance system capable of backtesting complex trading strategies across various instruments and timeframes, with provisions for future real-time signal generation and broker integration. The project emphasizes modern C++ (C++20), cross-platform compatibility, efficient data management, and a potentially rich user interface using web technologies. Key deliverables include a core strategy engine, indicator library, data handling module, backtesting framework, command-line interface, and optional web API and frontend components, all under an MIT license.II. Technology Evaluation: BackendThe backend forms the core of the platform, responsible for data processing, strategy evaluation, and performance calculations. Selecting the right technologies is crucial for meeting the performance, cross-platform, and maintainability goals.A. C++ Standard: C++17 vs C++20Modern C++ offers significant advantages for high-performance computing. The choice between C++17 and C++20 involves trade-offs between maturity and features.
+C++17: Offers features like structured bindings, constexpr if, fold expressions, and inline variables, enhancing code clarity and potentially performance over older standards.1 It is widely supported by major compilers.
+C++20: Represents a major upgrade, introducing concepts, the ranges library, coroutines, and modules.1
+
+Concepts: Allow developers to specify constraints on template parameters, leading to clearer template code and potentially faster compile times compared to SFINAE techniques.1 This is beneficial for generic algorithms often used in trading systems.
+Ranges: Simplify operations on sequences of data, making code involving data transformations and iterations more readable and potentially more efficient.1
+Coroutines: Provide a more natural way to write asynchronous code, which could be beneficial for future real-time data handling or asynchronous API interactions.1
+Modules: Offer a modern way to organize code, potentially improving build times and encapsulation compared to traditional header files, although compiler support is still evolving.1
+Other Features: std::format provides a safer and more user-friendly alternative to printf or stream manipulators for string formatting.2 Attributes like [[likely]] can help guide compiler optimization for branch prediction, which is critical in low-latency code.4
+
+
+While C++17 is robust, C++20 offers compelling features for a modern, performance-sensitive application. The improved expressiveness, potential for better compile times (with modules and concepts), and features like ranges and std::format justify its selection. Potential variations in compiler support should be monitored, but targeting C++20 provides a strong foundation for the future.Recommendation: Utilize C++20, leveraging its features for improved code clarity, potential performance benefits, and future-proofing.B. Build System: CMakeA robust and cross-platform build system is essential. CMake is the de facto standard for C++ projects, offering significant advantages.5
+Cross-Platform: CMake abstracts platform-specific build details, allowing a single CMakeLists.txt definition to generate native build files (Makefiles, Visual Studio projects, Xcode projects) for Linux, Windows, and macOS.5
+Dependency Management: CMake provides mechanisms like find_package and, more recently, FetchContent to manage external dependencies (libraries like TA-Lib, spdlog, nlohmann/json, DuckDB) in a consistent way across platforms.6 FetchContent is particularly useful for integrating dependencies directly into the build process.
+Modularity: CMake facilitates modular project structures by allowing nested CMakeLists.txt files within subdirectories, enabling the definition of distinct library and executable targets.5
+Best Practices: Adhering to modern CMake practices is crucial for maintainability:
+
+Use out-of-source builds (creating a separate build/ directory).5
+Specify minimum required CMake version (cmake_minimum_required).6
+Use target-based commands (target_link_libraries, target_include_directories, target_compile_features) instead of global commands.6
+Avoid hardcoding paths; use CMake variables and functions.5
+Leverage FetchContent or external package managers (like Conan or vcpkg, though FetchContent is simpler for header-only or easily buildable libraries) for dependencies.
+Utilize CTest for integrating unit tests.6
+
+
+Recommendation: Employ CMake as the build system, following modern practices and utilizing FetchContent for managing dependencies where feasible.C. Core LibrariesSeveral libraries are needed for common backend tasks.
+
+Technical Analysis:
+
+TA-Lib (C Library): A comprehensive and widely used library for technical analysis indicators.8 It requires C++ bindings. Its C API is stable and well-documented, covering aspects like input/output arrays (const double, double), parameters (int, double), input ranges (startIdx, endIdx), and output metadata (outBegIdx, outNbElement).8
+Header-Only Libraries: Alternatives exist, often template-based. While potentially easier to integrate initially ("just drop in files"), they can significantly increase compile times as the code is re-parsed in every translation unit including them.10 Complex header-only libraries can also be harder to maintain or debug.10
+Recommendation: Use TA-Lib (C library) via C++ wrappers. Its maturity, extensive indicator set, and predictable performance outweigh the potential integration simplicity of header-only options, especially given CMake's ability to manage the build process. Fetch TA-Lib source using FetchContent and build it as part of the project.
+
+
+
+JSON Handling:
+
+nlohmann/json: Extremely popular for its ease of use, intuitive API (feels like modern C++), and header-only nature (simplifies integration).12 Performance is generally good for configuration and moderate data volumes.12
+RapidJSON: Often benchmarks faster for raw parsing and serialization speed, especially on large documents.12 Its API can be less intuitive than nlohmann's.
+Other Libraries: Many others exist (jsoncpp, Boost.JSON, etc.) with varying trade-offs.13 Recent developments leveraging C++ reflection show potential for significant speedups, but rely on future C++ standards (C++26).15
+Recommendation: Use nlohmann/json. Its ease of use and integration are highly valuable for handling strategy definitions (JSON format requested by user) and API communication. While not the absolute fastest, its performance is sufficient for these tasks, and developer productivity is a key benefit.12
+
+
+
+Logging:
+
+spdlog: Very fast, feature-rich (asynchronous logging, custom sinks, formatting), header-only option available, well-maintained, and popular.16 Benchmarks often show it among the fastest.17
+Boost.Log: Powerful and highly configurable, part of the Boost ecosystem. Can be complex to set up and adds a dependency on Boost.16
+glog (Google Log): Simpler API, commonly used within Google projects, provides basic file/stderr logging and rotation.16 Less flexible than spdlog or Boost.Log.
+Recommendation: Use spdlog. It offers an excellent balance of high performance, ease of use, flexibility (synchronous/asynchronous, various sinks), and straightforward integration (header-only option or compiled library via FetchContent).16 Configurable log levels are essential for switching between detailed development logs and minimal production error logging.18
+
+
+III. Technology Evaluation: Data ManagementEfficiently storing, retrieving, and managing large volumes of time-series market data (OHLCV) is fundamental to the backtester's performance and capabilities.A. Database Choice: SQLite vs. DuckDBThe user currently uses SQLite (market_data.db) but is open to alternatives if faster.
+SQLite:
+
+Pros: Ubiquitous, simple, reliable, ACID compliant, excellent for transactional (OLTP) workloads (single record reads/writes).20 Mature C/C++ API.21 Can be fast with proper optimization (WAL mode, transactions, prepared statements, indexing).22
+Cons: Row-based storage is less efficient for analytical (OLAP) queries that scan/aggregate large columns.20 Performance can degrade significantly on large datasets without careful indexing and query optimization.24 Concurrency is limited, especially for writes.23
+
+
+DuckDB:
+
+Pros: Designed specifically for analytical (OLAP) workloads.20 Uses columnar storage and vectorized query execution, leading to significantly faster performance on aggregations, scans, and joins over large datasets compared to row-stores like SQLite.20 Can directly query various file formats (CSV, Parquet) and other databases, including SQLite via an extension.20 Offers modern SQL features and extensions. Provides C/C++ APIs.28 Supports multi-threaded query execution within a process.20
+Cons: Newer than SQLite. May have higher memory usage for certain operations due to vectorized processing.27 The C++ API is marked as potentially unstable, recommending the C API for stability.28 Can be larger binary size than SQLite.27 Some benchmarks show SQLite outperforming DuckDB on simple indexed lookups, while DuckDB excels at scans and complex queries.25
+
+
+Analysis: Backtesting inherently involves analytical workloads – scanning large time ranges of OHLCV data across multiple instruments, calculating indicators (which often involve window functions or aggregations), and evaluating strategy rules. DuckDB's architecture is fundamentally better suited for these tasks than SQLite's.20 Its ability to directly query the existing SQLite database 26 provides a smooth transition path.Recommendation: Adopt DuckDB as the primary database for storing and querying OHLCV data due to its superior performance characteristics for analytical workloads typical of backtesting. Utilize its SQLite extension for accessing the existing market_data.db initially. Use the stable DuckDB C API from C++ for better long-term stability.28B. Database Schema and Access DesignA well-designed schema is crucial for efficient data storage and retrieval across different instruments, exchanges, and timeframes.
+
+Proposed Tables:
+
+instruments: Stores master list of tradable instruments.
+
+Columns: instrument_key (VARCHAR, PRIMARY KEY, e.g., 'NSE_EQ|INE002A01018', 'NSE_FUT|NIFTY 24SEP...', 'BSE_EQ|500325'), exchange (VARCHAR, e.g., 'NSE', 'BSE', 'MCX'), segment (VARCHAR, e.g., 'EQ', 'FUT', 'OPT', 'IDX'), symbol (VARCHAR, e.g., 'RELIANCE', 'NIFTY', 'INFY'), name (VARCHAR), expiry_date (DATE, NULLable), strike_price (DOUBLE, NULLable), option_type (VARCHAR, NULLable, e.g., 'CE', 'PE'), lot_size (INTEGER, NULLable), tick_size (DOUBLE, NULLable).
+
+
+historical_candles: Stores OHLCV data.
+
+Columns: instrument_key (VARCHAR, FK references instruments.instrument_key), interval (VARCHAR, e.g., '1minute', '5minute', '1day'), timestamp (TIMESTAMP, e.g., ISO 8601 format), open (DOUBLE), high (DOUBLE), low (DOUBLE), close (DOUBLE), volume (BIGINT), open_interest (BIGINT, NULLable).
+Primary Key: (instrument_key, interval, timestamp).
+Indexing: Consider indexing on timestamp within partitions or using DuckDB's automatic indexing capabilities.
+
+
+index_constituents: Maps indices to their constituent instruments.
+
+Columns: index_key (VARCHAR, FK references instruments.instrument_key where segment='IDX'), constituent_key (VARCHAR, FK references instruments.instrument_key), as_of_date (DATE).
+Primary Key: (index_key, constituent_key, as_of_date).
+
+
+
+
+
+Data Loading:
+
+Upstox API: Fetch data using the Upstox API (confirming v2 vs v3 usage, especially regarding lookback periods and F&O data availability 29). Implement robust error handling and rate limit management. Use batch inserts or DuckDB's efficient loading mechanisms (e.g., loading via temporary Parquet/CSV or Appender API) for performance when storing fetched data. Implement gap-filling logic as described in the user query.
+CSV: Parse index constituent CSVs (downloaded from provided URLs) and insert into index_constituents. Parse instrument master CSVs (e.g., from Upstox) into instruments.
+SQLite Integration: Use ATTACH 'market_data.db' AS sqlite_db (TYPE sqlite); to access existing data.26
+
+
+
+Querying: Leverage DuckDB's SQL capabilities for efficient retrieval of time-series data for single instruments, multiple instruments (e.g., index constituents), and specific date ranges/intervals.
+
+C. Data Migration StrategyDuckDB's SQLite scanner simplifies accessing the existing data.
+Direct Access (Recommended): Use ATTACH 'market_data.db' AS sqlite_db (TYPE sqlite); within DuckDB.26 Queries can then reference tables like sqlite_db.historical_candles. This avoids a separate migration step and leverages DuckDB's query engine on the existing data.
+One-Time Migration (Optional): If direct access proves slow or problematic, perform a one-time migration using DuckDB SQL:
+SQL-- Attach the SQLite DB
+ATTACH 'market_data.db' AS sqlite_db (TYPE sqlite);
+-- Create the table in DuckDB if it doesn't exist (adjust schema as needed)
+CREATE TABLE IF NOT EXISTS historical_candles (...);
+-- Copy data from SQLite to DuckDB
+INSERT INTO historical_candles SELECT * FROM sqlite_db.historical_candles;
+-- Detach the SQLite DB
+DETACH sqlite_db;
+
+
+Manual Script (Fallback): If DuckDB's integration fails, provide a Python script using sqlite3 and duckdb Python packages to read from SQLite and write to DuckDB, handling potential type conversions.
+Python# Example Python Migration Script (Fallback)
+import sqlite3
+import duckdb
+import pandas as pd
+import sys
+
+def migrate_sqlite_to_duckdb(sqlite_db_path='market_data.db', duckdb_path='market_data.duckdb', table_name='historical_candles', chunk_size=100000):
+    """Migrates data from an SQLite table to a DuckDB table."""
+    print(f"Starting migration from {sqlite_db_path} ({table_name}) to {duckdb_path} ({table_name})")
+    try:
+        # Connect to databases
+        sqlite_conn = sqlite3.connect(sqlite_db_path)
+        duckdb_conn = duckdb.connect(database=duckdb_path, read_only=False)
+
+        print("Connections established.")
+
+        # Get total rows for progress indication
+        try:
+            total_rows = pd.read_sql_query(f"SELECT COUNT(*) FROM {table_name}", sqlite_conn).iloc
+            print(f"Total rows to migrate: {total_rows}")
+        except Exception as e:
+            print(f"Warning: Could not get row count from SQLite table '{table_name}'. Error: {e}")
+            total_rows = 0 # Set to 0 to avoid division by zero if count fails
+
+        # Create table in DuckDB (Infer schema from first chunk or define explicitly)
+        print(f"Checking/Creating table '{table_name}' in DuckDB...")
+        try:
+            first_chunk_df = pd.read_sql_query(f"SELECT * FROM {table_name} LIMIT 1", sqlite_conn)
+            # Attempt to create table based on inferred schema; adjust types if needed
+            duckdb_conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM first_chunk_df WHERE 1=0;")
+            print(f"Table '{table_name}' created or already exists in DuckDB.")
+        except Exception as e:
+            print(f"Error creating table in DuckDB: {e}. Please ensure the table schema is correct or create it manually.", file=sys.stderr)
+            duckdb_conn.close()
+            sqlite_conn.close()
+            return
+
+        # Use pandas to read in chunks and append to DuckDB
+        offset = 0
+        migrated_rows = 0
+        print("Starting chunked migration...")
+        while True:
+            query = f"SELECT * FROM {table_name} LIMIT {chunk_size} OFFSET {offset}"
+            try:
+                chunk_df = pd.read_sql_query(query, sqlite_conn)
+            except Exception as e:
+                print(f"\nError reading chunk from SQLite at offset {offset}: {e}", file=sys.stderr)
+                break # Stop migration on read error
+
+            if chunk_df.empty:
+                print("\nNo more data to read from SQLite.")
+                break
+
+            try:
+                # Ensure timestamp column is handled correctly if present
+                if 'timestamp' in chunk_df.columns:
+                     # Attempt conversion, handle errors gracefully
+                    try:
+                        chunk_df['timestamp'] = pd.to_datetime(chunk_df['timestamp'], errors='coerce')
+                         # Handle potential NaT values if coercion fails
+                        if chunk_df['timestamp'].isnull().any():
+                            print(f"Warning: Some timestamp values could not be converted in chunk starting at offset {offset}. Nulls introduced.")
+                    except Exception as ts_e:
+                         print(f"Warning: Error converting timestamp column in chunk starting at offset {offset}: {ts_e}. Skipping conversion for this chunk.")
+
+                duckdb_conn.append(table_name, chunk_df)
+                migrated_rows += len(chunk_df)
+                offset += chunk_size
+                if total_rows > 0:
+                    progress = (migrated_rows / total_rows) * 100
+                    print(f"\rMigrated {migrated_rows}/{total_rows} rows ({progress:.2f}%)", end="")
+                else:
+                    print(f"\rMigrated {migrated_rows} rows", end="")
+
+            except Exception as e:
+                print(f"\nError appending chunk to DuckDB: {e}", file=sys.stderr)
+                # Consider logging the problematic chunk_df here for debugging
+                break # Stop migration on write error
+
+        print(f"\nMigration finished. Total rows migrated: {migrated_rows}")
+
+    except sqlite3.Error as e:
+        print(f"SQLite error: {e}", file=sys.stderr)
+    except duckdb.Error as e:
+        print(f"DuckDB error: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+    finally:
+        if 'sqlite_conn' in locals() and sqlite_conn:
+            sqlite_conn.close()
+            print("SQLite connection closed.")
+        if 'duckdb_conn' in locals() and duckdb_conn:
+            duckdb_conn.close()
+            print("DuckDB connection closed.")
+
+if __name__ == "__main__":
+    # Example usage: Call this script from the command line
+    # python migrate_script.py path/to/market_data.db path/to/market_data.duckdb historical_candles
+    if len(sys.argv) >= 3:
+        sqlite_path = sys.argv[1]
+        duckdb_path = sys.argv[2]
+        table = sys.argv[3] if len(sys.argv) > 3 else 'historical_candles'
+        migrate_sqlite_to_duckdb(sqlite_db_path=sqlite_path, duckdb_path=duckdb_path, table_name=table)
+    else:
+         print("Usage: python migrate_script.py <sqlite_db_path> <duckdb_path> [table_name]")
+         # Default execution for convenience if no args provided
+         print("\nRunning with default paths ('market_data.db', 'market_data.duckdb') and table ('historical_candles')")
+         migrate_sqlite_to_duckdb()
+
+IV. Technology Evaluation: Frontend and UI/UXWhile optional, a frontend significantly enhances usability, allowing for visual strategy creation, backtest execution, and results analysis.A. Frontend Framework: React+TypeScript vs. AlternativesThe user expressed a preference for React+TypeScript.
+React+TypeScript:
+
+Pros: Huge ecosystem and community support, vast number of libraries and components, strong typing with TypeScript improves maintainability for complex applications, declarative UI paradigm, good performance with virtual DOM.33 Job market dominance means easier to find developers.34 Good tooling (React DevTools).
+Cons: Can have a steeper learning curve than Vue or Svelte, especially regarding state management and hooks (useEffect).33 Can be less opinionated, requiring more decisions about architecture and tooling.35 Performance, while generally good, might lag behind Svelte in some benchmarks.33
+
+
+Vue.js:
+
+Pros: Generally considered easier to learn than React or Angular, excellent documentation, good performance, balances simplicity and power.33 Single File Components (.vue) offer clear separation of template, script, and style.33 Good TypeScript support and developer tools.35
+Cons: Smaller ecosystem than React.34 Job market smaller than React/Angular.34
+
+
+Svelte:
+
+Pros: Compiles away framework code at build time, resulting in potentially smaller bundles and faster runtime performance.33 Simple component syntax. Growing community.
+Cons: Smallest ecosystem and job market of the major frameworks.34 Tooling and TypeScript support, while improving, might be less mature than React/Vue.35 Different paradigm (compiler vs. runtime library).
+
+
+Angular:
+
+Pros: Fully opinionated framework providing a complete solution (routing, state management, HTTP client), excellent TypeScript integration, suitable for large enterprise applications.33
+Cons: Can be complex and verbose, steeper learning curve.33 More rigid structure.
+
+
+Recommendation: Proceed with React+TypeScript as preferred by the user. Its large ecosystem, strong typing, and suitability for building complex UIs like a visual strategy builder make it a solid choice, despite a potentially steeper learning curve than Vue or Svelte.33B. Charting LibraryVisualizing backtest results (equity curve, signals on price chart) is crucial.
+TradingView Lightweight Charts:
+
+Pros: Specifically designed for financial charting, optimized for performance and small size using HTML5 Canvas.37 Interactive features suitable for price data. Open-source (Apache 2.0).37 Actively maintained by TradingView. Offers React integration examples/wrappers.39 Supports streaming updates.38
+Cons: Primarily focused on financial time-series charts; may be less flexible for general-purpose charting compared to others. Integration might require understanding its specific API.37
+
+
+Plotly.js:
+
+Pros: Versatile, supports many chart types (including financial), good interactivity, integrates well with Python/R (Plotly library) and JavaScript.42 Open-source. Good documentation.
+Cons: Can be heavier than Lightweight Charts. Performance with very large datasets (millions of points) might be a concern based on some reports.43 Built on D3.js.43
+
+
+Chart.js:
+
+Pros: Very popular, easy to use for common chart types, good documentation and community support, open-source.42 Good plugin ecosystem.42
+Cons: Less specialized for financial charting than TradingView. Performance with very large datasets might be limited compared to Canvas-focused libraries optimized for finance.
+
+
+Recommendation: Utilize TradingView Lightweight Charts. Their specific focus on high-performance financial charting, small footprint, and provision of React integration resources make them the most suitable choice for visualizing price data, indicators, and backtest signals.37C. PWA vs. Native GUI (Qt/ImGui)The user requested a mobile-friendly PWA but also mentioned native GUI options (ImGui, Qt).
+Progressive Web App (PWA) using React:
+
+Pros: Built with standard web technologies (HTML, CSS, JS/TS), single codebase for all platforms (desktop/mobile browsers), faster development cycle (especially with existing web skills), no app store approval needed for updates, discoverable via search engines, offline capabilities (via service workers), can be "installed" for app-like feel.44 Lower development cost compared to native.46
+Cons: Performance might not match native applications, especially for CPU-intensive tasks (though the heavy lifting is in the C++ backend). Access to native device features (Bluetooth, advanced sensors, file system integration) can be limited or inconsistent across platforms/browsers.44 Potential for higher battery consumption compared to native.47 Limited iOS support for some PWA features (historically).47 Requires a browser context.47
+
+
+Native GUI (Qt or ImGui):
+
+Pros: Potentially highest performance, full access to underlying OS and hardware features, seamless integration with the desktop environment.44 Qt is a mature, comprehensive framework; ImGui is lightweight and suitable for developer tools/overlays.
+Cons: Requires separate development effort from the web API/frontend. Platform-specific builds and potentially code are needed, increasing complexity and cost.44 Steeper learning curve for GUI frameworks if the team lacks experience. Distribution might involve installers or platform-specific packaging.6
+
+
+Analysis: Given the project structure includes a C++ backend communicating via a web API (REST/WebSocket), a PWA frontend aligns naturally. It leverages web technologies, offers cross-platform reach with a single codebase, and simplifies development compared to building and maintaining separate native GUIs. The performance-critical operations reside in the C++ backend, mitigating PWA performance concerns for the UI layer itself.Recommendation: Develop the frontend as a React+TypeScript PWA. This approach offers the best balance of development speed, cross-platform reach, and alignment with the proposed backend architecture. Native GUI options can be considered later if specific native integrations or UI performance bottlenecks arise that cannot be addressed by the PWA.V. Architecture Design: BackendA modular and well-defined backend architecture is key to building a maintainable and extensible platform.A. Core Strategy Engine DesignThe engine translates strategy definitions into executable logic.
+Interfaces: Define clear C++ interfaces using abstract base classes or concepts (C++20).
+
+IDataSource: Abstract interface for providing market data (implemented by the data module).
+IIndicator: Interface for technical indicators (implemented by the indicators module). Requires methods for calculation based on input data and retrieving results, handling lookback periods implicitly or explicitly.
+ICondition: Interface for a single logical condition (e.g., "Close > SMA(20)"). Requires an evaluate() method taking current market state (prices, indicator values).
+IRule: Interface representing an entry or exit rule. Typically holds a collection of ICondition objects combined with logical operators (AND/OR). Requires an evaluate() method.
+IStrategy: Interface representing a complete trading strategy. Holds entry/exit rules (IRule), required indicators (IIndicator), parameters (timeframes, symbols), and potentially position sizing logic.
+
+
+Pluggable Rules & Conditions: Strategies will be composed of IRule objects, which in turn are composed of ICondition objects. Implementations for common conditions (price comparisons, indicator comparisons, crossovers) will be provided. The system should allow for new ICondition types to be added easily.
+Expression Engine: For custom expressions ("SMA(Close, 14) > EMA(Close, 30) AND RSI(14) < 30"), implement a simple parser and evaluator. This could range from a basic string-based approach for predefined patterns to integrating a dedicated expression parsing library (e.g., exprtk) if complex user-defined formulas are required. Start simple, focusing on combinations of predefined ICondition types with AND/OR logic.
+Multi-Timeframe Handling: Strategies might require data from multiple timeframes (e.g., daily trend filter, 5-minute entry signals). The IDataSource needs to provide data for requested timeframes. The IStrategy or BacktestRunner must manage the synchronization and availability of data across different timeframes during evaluation. Indicator calculations must be performed on the correct timeframe data.
+Strategy Definition: Support defining strategies both programmatically in C++ (for complex, compiled-in strategies) and via JSON (loaded at runtime). The JSON parser will instantiate the corresponding C++ objects (Strategy, Rule, Condition, Indicator) based on the JSON structure.
+B. Backtesting FrameworkThe backtester simulates strategy execution on historical data.
+Event Loop: The core will be a time-driven loop. It iterates through historical data candle by candle (or bar by bar) for the specified date range and instruments.
+Data Flow: In each iteration:
+
+Fetch relevant historical data (current bar, lookback data needed for indicators) for all required instruments and timeframes using the IDataSource.
+Update all required indicators (IIndicator::calculate). Ensure correct alignment of indicator outputs with price data, considering lookback periods (outBegIdx from TA-Lib 8).
+Evaluate IStrategy rules based on the current data and indicator values.
+Generate Signal objects (Entry Long, Exit Long, Entry Short, Exit Short) if rules are met.
+
+
+Portfolio Simulation:
+
+Maintain portfolio state: cash, current positions (symbol, quantity, entry price, timestamp), equity history.
+Process signals: On an entry signal, simulate buying/selling short based on position sizing rules (e.g., fixed capital, fixed shares, percentage of equity).
+Process exits: On an exit signal (or SL/TP hit), simulate closing the position.
+Order Execution Model: Start with simple market order fills at the next bar's open. Add configurable parameters for slippage (difference between expected fill and actual fill) and commission costs.
+
+
+Metrics Calculation: Track trades (entry/exit price/time, PnL). Calculate metrics progressively or at the end:
+
+Total PnL, Profit Factor
+Equity Curve (time series of portfolio value)
+Maximum Drawdown (peak-to-trough decline in equity)
+Sharpe Ratio (risk-adjusted return; requires risk-free rate assumption)
+Win Rate, Average Win/Loss
+Total Trades, Average Holding Period
+
+
+Risk Management: Implement logic within the portfolio simulation or strategy evaluation to handle Stop Loss (SL) and Take Profit (TP) levels. Check SL/TP conditions on each bar after entry. Implement portfolio-level risk rules like maximum daily loss if required.
+C. Real-time Signal Engine (Blueprint)This component adapts the backtesting engine for live data.
+Data Source: Replace the historical IDataSource with a live data feed implementation (e.g., consuming data from a WebSocket connection, potentially from Upstox or another broker).
+Event Loop: Shift from historical iteration to an event-driven model, processing incoming live ticks or bars.
+State Management: Maintain the current state of indicators and strategy rules based on the live data stream. Incremental indicator calculation becomes more important for performance.
+Signal Generation: Reuse the IStrategy evaluation logic. When rules trigger signals, emit them (e.g., via WebSocket to the frontend, or potentially to a broker API interface).
+Broker Integration: Define an abstract IBroker interface for placing orders, managing positions, etc. The real-time engine would interact with this interface upon signal generation. Implementations would wrap specific broker APIs (Upstox Kite, etc.). This is a future extension point.
+D. API Design (REST/WebSocket)The API facilitates communication between the backend and frontend (or other clients).
+Strategy Definition Format (JSON): Define a clear, versioned JSON schema for representing strategies. Example sketch:
+JSON{
+  "strategy_name": "SMA Crossover",
+  "version": 1,
+  "instruments":,
+  "timeframes": ["1day", "5minute"],
+  "parameters": { "capital": 100000, "position_size_pct": 0.1 },
+  "indicators":,
+  "entry_rules": [
+    {
+      "id": "entry_long",
+      "conditions": [
+        { "type": "CrossesAbove", "indicator1": "sma_fast", "indicator2": "sma_slow" }
+      ],
+      "action": "EnterLong"
+    }
+  ],
+  "exit_rules":,
+      "action": "ExitLong"
+    }
+  ]
+}
+
+
+REST API Endpoints (Example using a C++ framework like Crow or Pistache):
+
+POST /strategies: Create/save a new strategy (request body: strategy JSON).
+GET /strategies: List available strategies.
+GET /strategies/{strategy_id}: Retrieve a specific strategy definition.
+PUT /strategies/{strategy_id}: Update a strategy.
+DELETE /strategies/{strategy_id}: Delete a strategy.
+POST /backtests: Start a new backtest job (request body: strategy ID/JSON, date range, instruments, parameters). Returns a job ID.
+GET /backtests/{job_id}/status: Check the status of a backtest job (pending, running, completed, failed).
+GET /backtests/{job_id}/results: Get the results of a completed backtest (response body: metrics, equity curve, trades JSON).
+GET /data/instruments: Get list of available instruments.
+GET /data/candles: Get historical candle data (potentially limited for direct client access).
+
+
+WebSocket API:
+
+Establish a WebSocket connection for real-time updates.
+Server pushes messages for:
+
+Live signal alerts (e.g., {"type": "signal", "strategy_id": "...", "instrument": "...", "signal_type": "EnterLong", "timestamp": "..."}).
+Live data scan results (if implemented).
+Backtest progress updates (optional).
+
+
+
+
+VI. Project Structure and Development PracticesA well-organized project structure and consistent development practices are crucial for managing complexity and facilitating collaboration, especially for an open-source project.A. Directory StructureThe proposed structure promotes modularity, separation of concerns, and accommodates the user's request for small, manageable files within logical components.5Table: Proposed Directory Structure
+Directory/ModulePurpose/Contentscmake/Custom CMake modules, toolchain files (if needed for cross-compilation).48data/Data loading and access module.├── include/Public headers (IDataSource, data access functions).├── src/Implementation (DuckDB connection, API fetchers, CSV parsers, schema mgmt).└── CMakeLists.txtCMake build script for the data module.indicators/Technical indicators module.├── include/Public headers (IIndicator, indicator wrappers).├── src/Implementation (TA-Lib wrappers 8, custom indicators).└── CMakeLists.txtCMake build script for the indicators module.strategy_engine/Core strategy evaluation logic.├── include/Public headers (IStrategy, IRule, ICondition, interfaces).├── src/Implementation (Strategy class, rule/condition evaluation, expression parser).└── CMakeLists.txtCMake build script for the strategy engine module.backtester/Backtesting simulation and metrics calculation module.├── include/Public headers (BacktestRunner, Portfolio, metrics structures).├── src/Implementation (event loop, portfolio simulation, order execution, metrics calc).└── CMakeLists.txtCMake build script for the backtester module.core/Shared components, utilities, and fundamental data structures.├── include/Public headers (Candle, Trade, Signal, TimeSeries, logging.hpp, etc.).├── src/Implementation (utility functions, potentially shared logic).└── CMakeLists.txtCMake build script for the core module.cli/Command-line interface application.├── src/Main CLI application code (argument parsing, invoking backtester).└── CMakeLists.txtCMake build script for the CLI executable.web_api/Optional: REST/WebSocket server module.├── include/Public headers for API handlers/controllers.├── src/Implementation (web server setup, route handling, WebSocket logic).└── CMakeLists.txtCMake build script for the web API module/executable.frontend/Optional: React frontend PWA.├── public/Static assets, index.html.├── src/React components, styles, logic (TypeScript).├── package.jsonNode.js dependencies and scripts.└──...Other React project files (tsconfig.json, etc.).tests/Unit and integration tests (using GoogleTest or Catch2).├── data/Tests for the data module.├── indicators/Tests for the indicators module.├── strategy_engine/Tests for the strategy engine module.└── CMakeLists.txtCMake script to define and run tests (using CTest).third_party/Dependencies managed by CMake FetchContent (or git submodules).CMakeLists.txtRoot CMake file (project definition, adds subdirectories).
+This structure clearly separates functional areas. Each module exposes its public interface through its include/ directory, while implementation details reside in src/. This encapsulation promotes modularity and makes the codebase easier to understand and maintain. The core/ module is pivotal; placing fundamental data structures like Candle, Trade, and Signal here ensures consistency across all other modules. If different modules defined their own versions of these structures, it would lead to complex mapping code and potential inconsistencies, hindering integration and increasing the likelihood of bugs. Similarly, structuring the tests/ directory to mirror the source layout (tests/data, tests/indicators) makes it intuitive to find and add tests for specific components, fostering a culture of testing essential for financial software reliability.6B. Logging, Code Reuse, and Version Control Guidelines
+Logging:
+
+Utilize spdlog as recommended.16
+Initialize and configure the logger centrally (e.g., in main() for the CLI or the entry point of the web_api).
+Configure sinks based on environment: a console sink (stdout_color_sink_mt) for development and a rotating file sink (rotating_file_sink_mt) for persistent logs in testing/production.
+Implement runtime log level configuration via command-line arguments or environment variables (e.g., SPDLOG_LEVEL=debug). Use compile-time log level macros (e.g., SPDLOG_ACTIVE_LEVEL) to completely remove lower-level log statements (trace, debug) from release builds, minimizing performance overhead.18
+Employ structured logging for key events, logging relevant context (e.g., spdlog::info("Backtest started: strategy={}, capital={}", strategy_name, initial_capital);).
+
+
+Code Reuse:
+
+Centralize all shared data structures (Candle, Trade, Order, Signal, Position, TimeSeries<T>, configuration structs) in core/include.
+Develop common utility functions (date/time manipulation, string formatting wrappers, mathematical helpers) in core/include/utils and core/src/utils.cpp.
+Use C++ templates and C++20 Concepts judiciously for generic algorithms (e.g., a template function to apply an indicator to a TimeSeries).
+Define and use interfaces (IStrategy, IDataSource, IIndicator, etc.) to decouple components and allow for multiple implementations (e.g., different data sources, different strategy execution models).
+Establish a consistent error handling mechanism. Define a base exception class (e.g., TradingPlatformException) in core and derive specific exceptions (e.g., DataLoadException, IndicatorCalculationException, ApiRequestException). Use these consistently across modules for uniform error reporting and handling, particularly important for propagating errors up to the API layer.
+
+
+Version Control (Git):
+
+Mandate the use of Git.
+Adopt a standard branching model (e.g., Gitflow for structured releases or GitHub Flow for simpler, CI-driven development).
+Enforce meaningful commit messages (e.g., following Conventional Commits).
+Maintain a comprehensive .gitignore file excluding build artifacts (build/), compiled libraries, temporary files, local configuration (e.g., config.local), database files (*.db, *.duckdb, *.db.wal), and sensitive credentials. API keys/secrets must never be committed; use environment variables, configuration files outside the repository, or a dedicated secrets management system.
+Always commit CMakeLists.txt files as they define the build structure.5
+For an open-source project, create a CONTRIBUTING.md file outlining setup, testing, and pull request procedures. Establish a code style guide (e.g., Google C++ Style Guide, LLVM Coding Standards) and enforce it using clang-format, potentially integrated with pre-commit hooks or CI pipelines, to ensure code consistency and readability as contributions grow.
+
+
+VII. Actionable Implementation Prompts (Chapter-Based)These prompts break down the implementation into manageable steps, suitable for guiding development or an AI coding assistant.A. Refined Master AI PromptCode snippetAct as a Senior C++ FinTech Developer. Your goal is to implement modules for an open-source Zerodha Streak clone, focusing on high performance, modularity, and maintainability.
+
+**Project Goal:** Build an open-source trading strategy backtesting and signaling platform using C++20 for the backend and potentially React+TypeScript for the frontend.
+
+**Core Backend Requirements:**
+*   **Language/Build:** C++20, CMake (cross-platform: Linux/Windows/Mac), structured using the recommended modular layout (core/, data/, indicators/, strategy_engine/, backtester/, cli/, web_api/). Emphasize small files and code reuse via the 'core' module.
+*   **Libraries:** Use spdlog for logging (configurable levels), nlohmann/json for strategy JSON handling, TA-Lib (via C++ bindings, fetched using CMake FetchContent) for technical indicators, DuckDB C API (for stability) for OHLCV data storage.
+*   **Data Management:** Implement a `data` module using DuckDB C API. Support loading from Upstox API (confirm v2 vs v3, handle rate limits, instrument keys like 'NSE_EQ|INE...'), CSVs (index constituents), and reading/importing from an existing SQLite file ('market_data.db') using DuckDB's capabilities (ATTACH SQL command). Implement gap-filling logic. Schema should handle multi-exchange/instrument/timeframe data (including F&O if Upstox API confirmed).
+*   **Indicators:** Implement an `indicators` module wrapping TA-Lib functions using its C API. Ensure correct handling of lookback periods (`outBegIdx`) and alignment with candle data. Provide an `IIndicator` interface.
+*   **Strategy Engine:** Implement a `strategy_engine` module with interfaces (`IStrategy`, `IRule`, `ICondition`). Support strategy definition via C++ and loading from JSON (using nlohmann/json). Include a basic expression evaluator for conditions (prices, indicators, boolean logic). Handle multi-timeframe data.
+*   **Backtester:** Implement a `backtester` module using the engine. Simulate portfolio (cash, positions, PnL), orders (configurable slippage/commission), position sizing. Calculate metrics (Equity Curve, Drawdown, Sharpe). Implement risk management (SL/TP). Support multi-stock/index testing. Output results as structured data (nlohmann/json).
+*   **Real-time Engine:** (Blueprint) Outline architecture for consuming live data (e.g., WebSocket), reusing engine logic, and emitting signals.
+*   **API Server:** (Optional) Implement a `web_api` module (e.g., using Crow or Pistache) providing REST endpoints for strategy management, backtest control/results, and data retrieval. Use WebSockets for real-time signal delivery.
+*   **CLI:** Implement a basic `cli` tool for running backtests from strategy JSON files.
+*   **Logging:** Integrate spdlog with configurable levels (runtime/compile-time) and appropriate sinks (file, console). Use structured logging where beneficial.
+*   **Testing:** Structure tests alongside source code (`tests/`) using GoogleTest or Catch2. Ensure adequate test coverage for core logic.
+
+**Frontend (Optional):**
+*   React+TypeScript PWA.
+*   Components: Visual Strategy Builder, Backtest Runner, Results Visualization (using TradingView Lightweight Charts React wrapper), Live Scanner.
+*   Communicate with backend via REST/WebSocket API.
+
+**License:** MIT License.
+
+**Focus on:** Performance optimization (efficient algorithms, data handling via DuckDB C API, TA-Lib C API), modularity (clear interfaces, separation of concerns), code clarity, robustness (error handling via custom exceptions, testing), and adherence to C++20 best practices. Provide implementation details in small, manageable code units/files as requested. Start with Chapter 1.
+B. Detailed Prompts per Module (Chapter-Based)
+(Chapter 1: Project Setup, Core Module & Logging)
+
+Prompt: "Set up the basic C++20 project structure using CMake as defined in the report outline (Section VI.A), including the root CMakeLists.txt and placeholders for each module (core, data, indicators, etc.). Configure CMake to enforce C++20 and handle cross-platform compilation. Create the core module: define basic data structures (Candle, Trade, Signal, Order, Position, TimeSeries<T>) in core/include/datatypes.hpp. Implement basic utility functions (e.g., date/time helpers using <chrono>) in core/include/utils.hpp and core/src/utils.cpp. Define a base exception TradingPlatformException and common error codes/derived exceptions in core/include/exceptions.hpp. Integrate the spdlog library (via FetchContent) into the core module. Set up basic logging configuration (console/file sinks, default format, runtime level setting from env var/arg) accessible via a simple header core/include/logging.hpp providing logger access (e.g., logging::getLogger()). Ensure the core module builds successfully."
+
+
+(Chapter 2: Data Module - DuckDB Integration & Basic Loading)
+
+Prompt: "Implement the data module. Integrate the DuckDB C API (header duckdb.h) using FetchContent (or system library). Create a DatabaseManager class in data/include/database_manager.hpp and data/src/database_manager.cpp. This class should manage a duckdb_database and duckdb_connection handle. Implement methods to: 1) Connect to a DuckDB file (path provided at runtime, e.g., 'market_data.duckdb'). 2) Initialize the database schema if it doesn't exist (create instruments, historical_candles, index_constituents tables as per Section III.B). 3) Execute arbitrary SQL via a helper method handling error checking using duckdb_query. 4) Attach an existing SQLite database (market_data.db) using the SQL ATTACH '...' (TYPE sqlite); command.26 5) Implement a function queryCandles(instrument_key, interval, start_time, end_time) that queries data from the historical_candles table (or the attached SQLite table if needed), retrieves results using duckdb_result and related C API functions, and returns data as core::TimeSeries<core::Candle>. Handle potential DuckDB errors using the C API error functions and throw appropriate core::DataLoadException."
+
+
+(Chapter 3: Data Module - Upstox API & CSV Integration)
+
+Prompt: "Extend the data module. Implement an UpstoxApiClient class (data/include/upstox_api_client.hpp, data/src/upstox_api_client.cpp). Use a C++ HTTP client library (e.g., cpr or Boost.Beast via FetchContent) to interact with the Upstox API (confirm v2/v3 endpoints 29). Implement methods to: 1) Fetch the instrument master list (handle CSV download/parsing or API endpoint if available) and store/update it in the instruments DuckDB table. 2) Fetch historical candle data (get_historical_candle_data or similar endpoint 31). Handle required parameters (instrument_key, interval, to_date, from_date), parse the JSON response (using nlohmann/json), and handle potential API errors and rate limits. 3) Implement data insertion into the historical_candles table using the DuckDB C API's Appender interface for efficient bulk loading. Implement gap-filling logic: check existing data in DuckDB before fetching from API. 4) Implement a CsvLoader class to fetch (using HTTP client) and parse index constituent CSVs (from user-provided URLs like NiftyIndices) into the index_constituents DuckDB table." (Note: F&O data confirmation still pending).
+
+
+(Chapter 4: Indicator Module)
+
+Prompt: "Implement the indicators module. Integrate TA-Lib (C library) using FetchContent. Create C++ wrappers using the TA-Lib C API (ta_libc.h). Define an IIndicator interface in indicators/include/iindicator.hpp with methods like calculate(const core::TimeSeries<core::Candle>& input) and getResult() -> core::TimeSeries<double>. Implement concrete wrapper classes (e.g., SmaIndicator, RsiIndicator, MacdIndicator) in separate header/source files inheriting from IIndicator. These wrappers must: a) Call the correct TA-Lib C function (e.g., TA_MA, TA_RSI 8). b) Correctly determine the lookback period using TA_SetUnstablePeriod / TA_GetLookback or similar. c) Allocate appropriately sized input (const double) and output (double) arrays. d) Pass parameters (optInTimePeriod, etc.) correctly. e) Handle the outBegIdx and outNbElement return values to ensure the output TimeSeries<double> is correctly sized and aligned (time-wise) with the input TimeSeries<Candle> after accounting for the lookback period. Manage indicator state if aiming for incremental calculation (optional optimization)."
+
+
+(Chapter 5: Strategy Engine Module - Interfaces & Conditions)
+
+Prompt: "Implement the core strategy_engine module. Define interfaces ICondition, IRule, and IStrategy in strategy_engine/include/interfaces.hpp. Define an enum SignalAction { None, EnterLong, ExitLong, EnterShort, ExitShort } in core/include/datatypes.hpp. Implement basic condition classes inheriting ICondition in separate files (e.g., PriceCondition.hpp/.cpp, IndicatorCondition.hpp/.cpp, CrossCondition.hpp/.cpp). Examples: PriceCompareCondition (e.g., close > open), IndicatorCompareCondition (e.g., rsi < 30), CrossesAboveCondition (e.g., sma_fast crosses above sma_slow). Each condition's evaluate(const MarketDataSnapshot& data) method should return bool. Implement AndCondition and OrCondition classes that take multiple ICondition pointers/references and combine their results."
+
+
+(Chapter 6: Strategy Engine Module - Strategy Representation & Execution)
+
+Prompt: "Extend the strategy_engine. Implement a concrete Strategy class (Strategy.hpp/.cpp) inheriting IStrategy. It should store std::vector<std::unique_ptr<IRule>> for entry and exit rules, required indicator configurations, and parameters. Implement Rule class inheriting IRule, holding std::unique_ptr<ICondition> and the SignalAction to generate. Implement a StrategyFactory responsible for parsing a strategy definition from nlohmann::json (using the schema from Section V.D) and constructing a Strategy object with its associated Rule, Condition, and Indicator instances (indicators might be instantiated via an IndicatorFactory in the indicators module). Implement the Strategy::evaluate(const MarketDataSnapshot& data) method: iterate through entry/exit rules, evaluate them, and return the appropriate SignalAction if a rule triggers."
+
+
+(Chapter 7: Backtester Module - Core Loop & Portfolio)
+
+Prompt: "Implement the backtester module. Create a BacktestRunner class (BacktestRunner.hpp/.cpp). Implement the main loop: takes Strategy, IDataSource, start/end dates, initial capital, instrument list. Iterates timestamp by timestamp based on the primary timeframe. In each step: 1) Fetch required market data for all instruments/timeframes using IDataSource. 2) Update indicators using IIndicator::calculate. 3) Create a MarketDataSnapshot containing current prices and indicator values. 4) Evaluate the strategy using Strategy::evaluate(snapshot). 5) Generate Signal objects. Implement a Portfolio class (Portfolio.hpp/.cpp) to track cash, positions (std::map<std::string, core::Position>), and equity history (core::TimeSeries<double>). Implement Portfolio::processSignal(const core::Signal& signal, const MarketDataSnapshot& data): simulate order execution (market order at next open, apply configurable slippage/commission), update cash and positions. Implement Portfolio::updateMarketValue(const MarketDataSnapshot& data) to recalculate portfolio value based on current prices."
+
+
+(Chapter 8: Backtester Module - Metrics & Output)
+
+Prompt: "Extend the backtester module. Enhance the Portfolio class to log all executed trades (std::vector<core::Trade>). Implement a MetricsCalculator class (MetricsCalculator.hpp/.cpp). This class takes the final Portfolio state (trade log, equity curve) as input. Implement methods to calculate: Total PnL, Max Drawdown (iterate through equity curve), Sharpe Ratio (calculate daily/periodic returns from equity curve, requires risk-free rate input), Win Rate, Average Win/Loss, Total Trades. Modify BacktestRunner to use MetricsCalculator at the end of the run. Implement a function generateReport(const Metrics& metrics, const core::TimeSeries<double>& equityCurve, const std::vector<core::Trade>& trades) that outputs these results into a structured nlohmann::json object."
+
+
+(Chapter 9: CLI & API Server)
+
+Prompt: "Implement the cli application in cli/src/main.cpp. Use a command-line parsing library (e.g., cxxopts or Boost.Program_options via FetchContent). Parse arguments: strategy JSON file path, start date, end date, initial capital, comma-separated list of instruments. Instantiate DatabaseManager, StrategyFactory, BacktestRunner. Load the strategy from JSON, run the backtest, and print the resulting metrics JSON report (from generateReport) to the console. Handle exceptions gracefully using try-catch and log errors using spdlog. (Optional) Implement the web_api module using Crow (crow_all.h via FetchContent). Create basic REST endpoints in web_api/src/main.cpp: POST /backtest (accepts strategy JSON, params; starts backtest asynchronously, returns job ID), GET /backtest/{job_id}/results (returns results JSON)."
+
+
+(Chapter 10: Frontend - Charting & Basic UI)
+
+Prompt: "Set up a React+TypeScript project in frontend/ using create-react-app or Vite. Configure it as a PWA (manifest.json, service worker). Create a ChartComponent.tsx using React hooks (useEffect, useRef, useState) to wrap the TradingView Lightweight Charts library (lightweight-charts npm package).40 Implement functionality within the component to: 1) Create a chart instance (createChart) attached to a div ref. 2) Add a candlestick series (addCandlestickSeries). 3) Fetch sample backtest results (e.g., from a static JSON file or a basic API endpoint) containing price data, equity curve data, and trade markers (buy/sell points with timestamps). 4) Use series.setData() to display price data. 5) Add markers to the price series using series.setMarkers() to indicate trades. 6) Optionally, add a second series (e.g., line series) to display the equity curve on a separate pane or overlay (requires managing multiple series)."
+
+
+(Chapter 11: Frontend - Strategy Builder & Integration)
+
+Prompt: "Implement a basic visual strategy builder component (StrategyBuilder.tsx) in React. Use state (useState, useReducer) to manage the strategy definition as a JavaScript object mirroring the backend JSON structure. Provide UI elements (dropdowns, input fields) to: 1) Select indicators (SMA, RSI, etc.). 2) Define parameters (periods). 3) Create conditions (Indicator Compare, Price Compare, Crosses). 4) Combine conditions into rules (AND/OR). 5) Assign rules to entry/exit actions. Implement API calls (using fetch or axios) to: 1) POST /strategies to save the constructed strategy JSON to the backend. 2) GET /strategies to load a list of existing strategies. 3) POST /backtests to submit the current strategy definition for backtesting. 4) Poll or use WebSockets to check GET /backtests/{job_id}/status and retrieve results from GET /backtests/{job_id}/results to display in the ChartComponent."
+
+
+VIII. Conclusion and Completeness ReviewA. Summary of RecommendationsThe proposed plan advocates for a high-performance backend built with C++20 and CMake, leveraging DuckDB (via its C API) for analytical data storage, TA-Lib (C API) for indicators, spdlog for logging, and nlohmann/json for serialization. The optional frontend utilizes React+TypeScript as a PWA, visualizing data with TradingView Lightweight Charts. The architecture emphasizes modularity through clear interfaces and a well-defined project structure, promoting code reuse via a central core module. Implementation is staged through chapter-based prompts focusing on iterative development and testing.B. Addressing User RequirementsThe plan directly addresses the user's core requirements:
+Zerodha Streak Clone Goal: Provides a foundation for backtesting and signal generation.
+C++ Backend: Core logic implemented in C++20 for performance.
+Cross-Platform: CMake ensures build compatibility across Linux, Windows, macOS.
+Custom Strategy Engine: Pluggable rules/conditions via interfaces, JSON loading.
+Multi-Timeframe: Architecture designed to handle multiple timeframes.
+Indicators: TA-Lib integration provides standard indicators.
+Custom Expressions: Basic boolean logic supported, extensible.
+Modular Strategy Definition: JSON format specified.
+Backtesting: Multi-stock/date range support, core metrics (Equity, PnL, Drawdown, Sharpe).
+Portfolio Simulation: Capital, position sizing included.
+Real-time Engine: Blueprint provided for future extension.
+React+TS Frontend (Optional): Recommended framework, PWA approach.
+Strategy Builder: Included in frontend plan.
+Backtest Runner/Viz: Included in frontend plan using suggested charting library.
+Strategy Scan: Can be built upon the real-time engine blueprint.
+Mobile-Friendly: PWA approach addresses this.
+Save/Load Strategy: JSON format and API endpoints defined.
+API: REST/WebSocket API design included.
+Database: DuckDB chosen for performance, with plan for SQLite integration/migration.
+Chart Overlay: TradingView Lightweight Charts support markers.
+Risk Management: SL/TP included in backtester design.
+Open Source (MIT): Specified license.
+Modular/Extensible: Core design principle.
+Project Structure/Small Files: Detailed structure provided adhering to request.
+Instrument Fetching: Upstox API integration planned.
+Index Constituents: CSV loading planned.
+Existing DB Usage: DuckDB's SQLite scanner addresses this.
+Logging Levels: spdlog provides configurable levels.
+Code Reuse: Emphasized via core module and interfaces.
+C. Identified Gaps/Risks
+Upstox F&O Historical Data: Confirmation is required regarding the availability and limitations of historical data for Futures (FUT) and Options (OPT) instruments via the chosen Upstox API version (v2 or the newer v3). The documentation reviewed primarily focuses on Equity (EQ) examples 31 or mentions v3 enhancements without explicitly confirming deep F&O history.29 Lack of F&O data would prevent backtesting strategies on these segments. 32 indicates this information might require deeper exploration of the specific API docs.
+API Stability and Versioning: The DuckDB C++ API is marked as internal/unstable, hence the recommendation to use the C API.28 Upstox has introduced v3 APIs alongside v2 29, indicating potential for changes or deprecation; the implementation must be mindful of the chosen version and potential future updates.
+Performance Optimization: While technologies like C++20 and DuckDB provide a strong foundation, achieving optimal backtesting speed will likely require careful profiling and targeted optimization of C++ code (algorithms, data structures, memory access patterns) and DuckDB query construction.
+Real-time Engine Complexity: Building a production-grade real-time signal engine is substantially more complex than a backtester. It involves handling network latency, data feed interruptions, robust error recovery, concurrency, and potentially low-latency order execution integration, which are beyond the scope of the initial backtesting focus.
+D. Next Steps
+Confirm Upstox F&O Data: Verify the availability, depth, and API endpoints (v2/v3) for historical Futures and Options data from Upstox documentation or support.
+Project Setup: Initialize the Git repository and implement the basic CMake project structure (Section VI.A).
+Core Module Implementation: Implement the core data structures, utilities, logging setup (spdlog), and exception classes (Chapter 1 Prompt).
+Data Module - Phase 1: Implement DuckDB C API integration, database connection, schema initialization, and SQLite attachment (Chapter 2 Prompt).
+Begin Testing: Start writing unit tests (using GoogleTest/Catch2) for the core module components.
+
+
+Okay, let's clarify those points based on the research and proposed design:
+
+Multi-Indicator Strategies & Conditional Logic (AND/OR):
+
+Yes, the platform design explicitly supports strategies that rely on multiple technical indicators.
+The strategy engine allows you to define rules based on conditions involving various indicators (e.g., "SMA(50) crosses above SMA(200)" or "RSI(14) < 30").
+You can combine multiple conditions within a single rule using boolean logic like AND and OR (e.g., "SMA(10) > SMA(20) AND RSI(14) > 50"). This allows for complex entry and exit criteria based on the confluence of several indicator signals.
+While it doesn't implement a free-form "if/else" programming structure within a single rule block, the system allows you to create separate rules for different scenarios, effectively achieving similar conditional outcomes (e.g., one rule for long entry under Condition A, another rule for short entry under Condition B, separate rules for exits based on other conditions).
+Pre-made Research Paper Strategies:
+
+The current plan focuses on building the core platform and engine itself – the tools you need to create, test, and run strategies.
+It does not currently include the implementation of specific, pre-built strategies (like those from academic papers or popular trading literature) out-of-the-box.
+However, the platform is designed to be flexible enough for you (or other users) to implement such strategies using the provided tools (indicators, conditions, rules) either via the JSON definition or potentially by coding them directly in C++ if needed. Adding a library of example strategies could certainly be a future enhancement once the core platform is stable.
+Saving Strategies and Loading Previous Results:
+
+Saving/Loading Strategies: Yes, the plan absolutely includes the ability to save your created strategy definitions. Strategies will be saved in a structured JSON format via the backend API (POST /strategies). You can then list and reload these saved strategy definitions (GET /strategies, GET /strategies/{strategy_id}) for editing or running new backtests.
+Loading Previous Results: The system is designed to run backtests as distinct jobs. When you run a backtest, it gets a job ID, and you retrieve the results (metrics, equity curve, trades) associated with that specific job ID (GET /backtests/{job_id}/results). The plan doesn't automatically store the last backtest result directly with the saved strategy definition itself. So, when you load a saved strategy definition, you aren't automatically loading the results from its previous run. You would typically load the strategy, then run a new backtest or look up previous backtest results through a separate history mechanism (which could be built into the frontend, perhaps allowing you to see all runs for a given strategy name). Linking the latest result directly to the strategy definition could be considered as a potential future feature enhancement if needed.
+In summary: multi-indicator support and conditional logic (AND/OR) are included. Saving/loading strategy definitions is included. Pre-built strategies are not part of the initial platform build but can be implemented using it. Loading the results of a previous run isn't automatically tied to loading the strategy definition, as results belong to specific backtest executions (jobs).
