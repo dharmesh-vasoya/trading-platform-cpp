@@ -264,97 +264,141 @@ namespace backtester {
 
     // --- Implement runEventLoop ---
     void Backtester::runEventLoop() {
-        auto logger = core::logging::getLogger();
-
-        if (primary_data_.empty() || !strategy_ || indicators_.size() != strategy_->getRequiredIndicatorNames().size()) {
-            logger->error("Backtest prerequisites not met (data/strategy/indicators). Cannot run event loop.");
-            return;
-        }
-
-        // --- Determine Maximum Lookback ---
-        int max_lookback = 0;
-        for (const auto& pair : indicators_) {
-            if (pair.second) { // Check if indicator pointer is valid
-                max_lookback = std::max(max_lookback, pair.second->getLookback());
-            }
-        }
-        logger->info("Maximum indicator lookback period: {}", max_lookback);
-
-        // --- Check if enough data exists ---
-        if (primary_data_.size() <= static_cast<size_t>(max_lookback)) {
-            logger->error("Not enough primary data ({}) to cover maximum lookback ({}). Cannot run loop.",
-                        primary_data_.size(), max_lookback);
-            return;
-        }
-
-        // --- Main Event Loop ---
-        logger->info("Iterating through {} bars (starting after lookback)...", primary_data_.size() - max_lookback);
-        // Start loop from the first index where ALL indicators have a valid value
-        for (size_t i = static_cast<size_t>(max_lookback); i < primary_data_.size(); ++i) {
-
-            const core::Candle& current_candle = primary_data_[i];
-
-            // --- 1. Create Market Data Snapshot ---
-            strategy_engine::MarketDataSnapshot snapshot;
-            snapshot.current_time = current_candle.timestamp;
-            snapshot.current_candle = &current_candle;
-
-            // Populate indicator values for the *current* candle time 'i'
-            bool indicators_ready = true; // Flag to check if all needed indicators have values
-            for (const auto& pair : indicators_) {
-                const std::string& name = pair.first;
-                const auto& indicator = pair.second;
-                if (!indicator) continue; // Should not happen if createIndicators worked
-
-                // The result index corresponds to the input index minus the lookback
-                int result_index = static_cast<int>(i) - indicator->getLookback();
-
-                const auto& results = indicator_results_[name]; // Get results vector for this indicator
-
-                if (result_index >= 0 && static_cast<size_t>(result_index) < results.size()) {
+          auto logger = core::logging::getLogger();
+     
+          // --- Prerequisite Checks ---
+          if (!strategy_) {
+          logger->error("Cannot run event loop: Strategy is not loaded.");
+          return;
+          }
+          if (primary_data_.empty()) {
+          logger->error("Cannot run event loop: No primary market data loaded.");
+          return;
+          }
+          // Optional: Check if indicators map matches strategy requirements
+          if (indicators_.size() != strategy_->getRequiredIndicatorNames().size() && !strategy_->getRequiredIndicatorNames().empty()) {
+               logger->warn("Mismatch between created indicators ({}) and required indicators ({}). Results may be inaccurate.",
+                         indicators_.size(), strategy_->getRequiredIndicatorNames().size());
+               // Consider returning here if strict matching is needed
+          }
+     
+     
+          // --- Determine Maximum Lookback Period ---
+          int max_lookback = 0;
+          if (indicators_.empty()){
+          logger->info("No indicators used, lookback is 0.");
+          } else {
+          for (const auto& pair : indicators_) {
+               if (pair.second) { // Check if indicator pointer is valid
+                    max_lookback = std::max(max_lookback, pair.second->getLookback());
+               } else {
+                    logger->error("Null indicator found in map for key '{}' during lookback calculation!", pair.first);
+                    // Decide how critical this is - maybe throw or return?
+                    // return;
+               }
+          }
+          logger->info("Maximum indicator lookback period: {}", max_lookback);
+          }
+     
+     
+          // --- Check if enough data exists for loop ---
+          if (primary_data_.size() <= static_cast<size_t>(max_lookback)) {
+          logger->error("Not enough primary data ({}) to cover maximum lookback ({}). Cannot run event loop.",
+                         primary_data_.size(), max_lookback);
+          return;
+          }
+     
+          // --- Main Event Loop ---
+          logger->info("Iterating through {} bars (starting at index {} after lookback)...",
+                    primary_data_.size() - max_lookback, max_lookback);
+     
+          // Start loop from the first index where ALL indicators have a valid value
+          for (size_t i = static_cast<size_t>(max_lookback); i < primary_data_.size(); ++i) {
+     
+          const core::Candle& current_candle = primary_data_[i];
+          // Get previous candle safely (will be null for the very first iteration i == max_lookback)
+          const core::Candle* previous_candle_ptr = (i > 0) ? &primary_data_[i - 1] : nullptr;
+     
+     
+          // --- 1. Create Market Data Snapshot ---
+          strategy_engine::MarketDataSnapshot snapshot;
+          snapshot.current_time = current_candle.timestamp;
+          snapshot.current_candle = &current_candle;
+          snapshot.previous_candle = previous_candle_ptr; // Assign previous candle pointer
+     
+          logger->trace("--- Snapshot for Bar Index: {}, Time: {} ---", i, core::utils::timestampToString(snapshot.current_time));
+     
+          // Populate indicator values map for the *current* candle time 'i'
+          // Populate previous indicator values map for the *previous* candle time 'i-1'
+          bool all_current_indicators_ready = true; // Are all indicators valid for *this* bar?
+          for (const auto& pair : indicators_) {
+               const std::string& name = pair.first;
+               const auto& indicator = pair.second;
+               if (!indicator) continue; // Should have been caught earlier ideally
+     
+               // Current value index = i - lookback
+               int result_index = static_cast<int>(i) - indicator->getLookback();
+               const auto& results = indicator_results_[name]; // Get results vector
+     
+               // Get Current Value
+               if (result_index >= 0 && static_cast<size_t>(result_index) < results.size()) {
                     snapshot.indicator_values[name] = results[static_cast<size_t>(result_index)];
-                    logger->trace("Snapshot Time: {}, Indicator: {}, Index: {}, Value: {}",
-                                core::utils::timestampToString(snapshot.current_time),
-                                name, result_index, snapshot.indicator_values[name]);
-                } else {
-                    // Indicator value not available yet for this candle (still in lookback period for *this* indicator)
-                    // OR calculation somehow produced fewer results than expected.
-                    logger->trace("Snapshot Time: {}, Indicator: {}, Value: N/A (Result Index {})",
-                                core::utils::timestampToString(snapshot.current_time), name, result_index);
-                    indicators_ready = false; // Mark snapshot as potentially incomplete for this step
-                    // Strategy evaluation might handle missing indicators, or we could skip evaluation
-                }
-            }
-
-            // Optional: Skip evaluation if not all indicators are ready?
-            // if (!indicators_ready) {
-            //      logger->trace("Skipping strategy evaluation at {} due to lack of indicator data.", core::utils::timestampToString(snapshot.current_time));
-            //      continue;
-            // }
-
-
-            // --- 2. Evaluate Strategy ---
-            core::SignalAction signal = strategy_->evaluate(snapshot);
-
-
-            // --- 3. Execute Signal (Placeholder) ---
-            if (signal != core::SignalAction::None) {
-                logger->info("Time: {}, Signal Generated: {}", core::utils::timestampToString(snapshot.current_time), static_cast<int>(signal));
-                executeSignal(snapshot.current_time, current_candle, signal);
-            }
-
-
-            // --- 4. Record Portfolio Value for this Timestamp ---
-            // Create map of current prices (use close price for simplicity)
-            std::map<std::string, double> current_prices;
-            current_prices[primary_instrument_key_] = current_candle.close;
-            portfolio_->recordTimestampValue(snapshot.current_time, current_prices);
-
-
-            // --- Loop End ---
-        } // End for loop through primary_data_
-
-    } // End runEventLoop
+                    logger->trace(" -> Indicator[{}]: Current Value = {:.4f} (Result Idx {})", name, snapshot.indicator_values[name], result_index);
+               } else {
+                    logger->trace(" -> Indicator[{}]: Current Value = N/A (Result Idx {})", name, result_index);
+                    all_current_indicators_ready = false;
+               }
+     
+               // Get Previous Value
+               int prev_result_index = result_index - 1;
+               if (prev_result_index >= 0 && static_cast<size_t>(prev_result_index) < results.size()) {
+                    snapshot.indicator_values_prev[name] = results[static_cast<size_t>(prev_result_index)];
+                    logger->trace(" -> Indicator[{}]: Previous Value = {:.4f} (Result Idx {})", name, snapshot.indicator_values_prev[name], prev_result_index);
+               } else {
+                    logger->trace(" -> Indicator[{}]: Previous Value = N/A (Result Idx {})", name, prev_result_index);
+                    // If previous value is missing, crossover conditions cannot be evaluated correctly
+               }
+          }
+     
+          // Optional: Skip evaluation if not all *current* indicators are ready?
+          // if (!all_current_indicators_ready) {
+          //      logger->trace("Skipping evaluation due to missing current indicator data.");
+          //      // STILL need to record portfolio value for equity curve continuity
+          //      std::map<std::string, double> current_prices;
+          //      current_prices[primary_instrument_key_] = current_candle.close;
+          //      portfolio_->recordTimestampValue(snapshot.current_time, current_prices);
+          //      continue; // Skip to next bar
+          // }
+     
+     
+          // --- 2. Evaluate Strategy ---
+          logger->trace("Evaluating strategy '{}'...", strategy_->getName());
+          // Pass the snapshot containing current and previous indicator/candle data
+          core::SignalAction signal = strategy_->evaluate(snapshot);
+     
+     
+          // --- 3. Execute Signal ---
+          if (signal != core::SignalAction::None) {
+               // Log the signal before attempting execution
+               logger->info("Time: {}, Signal Generated: {}", core::utils::timestampToString(snapshot.current_time), static_cast<int>(signal));
+               // Pass current candle for execution price calculation
+               executeSignal(snapshot.current_time, current_candle, signal);
+          }
+     
+     
+          // --- 4. Record Portfolio Value for this Timestamp (End of Bar) ---
+          // Create map of current prices (just the primary instrument's close for now)
+          std::map<std::string, double> current_prices;
+          current_prices[primary_instrument_key_] = current_candle.close;
+          // Record equity AFTER potential trades for this bar are processed
+          portfolio_->recordTimestampValue(snapshot.current_time, current_prices);
+     
+     
+          // --- Loop End ---
+          } // End for loop through primary_data_
+          logger->trace("Finished event loop processing.");
+     
+     } // End runEventLoop
 
     void Backtester::executeSignal(core::Timestamp timestamp, const core::Candle& current_candle, core::SignalAction signal) {
         auto logger = core::logging::getLogger();

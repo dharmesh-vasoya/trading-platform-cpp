@@ -17,7 +17,7 @@
         "condition": {
           "type": "PriceIndicator",
           "price_field": "Close",
-          "op": "GT",
+          "op": "crossover",
           "indicator": "SMA(10)"
         }
       }
@@ -34,4 +34,4 @@
         }
       }
     ]
-  }
+}

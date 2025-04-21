@@ -1,0 +1,35 @@
+{
+    "strategy_name": "SMACross_10_20_Day",
+    "instruments": ["NSE_EQ|INE002A01018"],
+    "timeframes": ["day"],
+    "position_sizing": {
+      "method": "Quantity",
+      "value": 10
+    },
+    "indicators": [ 
+      {"name": "SMA(10)"},
+      {"name": "SMA(20)"}
+    ],
+    "entry_rules": [
+      {
+        "rule_name": "EnterLongOnFastAboveSlow",
+        "action": "EnterLong",
+        "condition": {
+          "type": "CrossesAbove", 
+          "indicator1": "SMA(10)",
+          "indicator2": "SMA(20)"
+        }
+      }
+    ],
+    "exit_rules": [
+      {
+        "rule_name": "ExitLongOnFastBelowSlow",
+        "action": "ExitLong",
+        "condition": {
+          "type": "CrossesBelow",
+          "indicator1": "SMA(10)",
+          "indicator2": "SMA(20)"
+        }
+      }
+    ]
+}

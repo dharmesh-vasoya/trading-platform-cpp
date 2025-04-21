@@ -9,6 +9,7 @@ add_library(strategy_engine STATIC
     src/strategy.cpp
     src/strategy_factory.cpp
     src/price_indicator_condition.cpp
+    src/indicator_cross_condition.cpp
     # Add other .cpp files here later
 )
 

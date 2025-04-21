@@ -10,6 +10,7 @@
 #include "common_types.hpp"
 #include "spdlog/fmt/bundled/core.h" // Use direct path for safety
 #include "price_indicator_condition.hpp"
+#include "indicator_cross_condition.hpp"
 #include <stdexcept>              // For std::invalid_argument
 #include <vector>
 #include <string>
@@ -116,7 +117,16 @@ namespace strategy_engine {
                 ComparisonOp op = stringToCompOp(config["op"].get<std::string>());
                 std::string indicator_name = config["indicator"].get<std::string>();
                 return std::make_unique<PriceIndicatorCondition>(field, op, indicator_name);
-           } else if (type == "AND" || type == "OR") {
+           } else if (type == "CrossesAbove" || type == "CrossesBelow") {
+                if (!config.contains("indicator1") || !config["indicator1"].is_string() ||
+                    !config.contains("indicator2") || !config["indicator2"].is_string()) {
+                    throw std::invalid_argument(fmt::format("{} condition requires 'indicator1'(string) and 'indicator2'(string).", type));
+                }
+                std::string indicator1 = config["indicator1"].get<std::string>();
+                std::string indicator2 = config["indicator2"].get<std::string>();
+                CrossType cross_type = (type == "CrossesAbove") ? CrossType::CrossesAbove : CrossType::CrossesBelow;
+                return std::make_unique<IndicatorCrossCondition>(indicator1, cross_type, indicator2);
+            } else if (type == "AND" || type == "OR") {
                 if (!config.contains("conditions") || !config["conditions"].is_array() || config["conditions"].empty()) {
                     throw std::invalid_argument(fmt::format("{} condition requires 'conditions' (non-empty array).", type));
                 }
@@ -196,7 +206,16 @@ namespace strategy_engine {
                 if (config.contains("indicator") && config["indicator"].is_string()) {
                     names.insert(config["indicator"].get<std::string>());
                 }
-           } else if (type == "AND" || type == "OR") {
+           } else if (type == "CrossesAbove" || type == "CrossesBelow") {
+            // These types compare two indicators
+            if (config.contains("indicator1") && config["indicator1"].is_string()) {
+               names.insert(config["indicator1"].get<std::string>());
+            }
+            if (config.contains("indicator2") && config["indicator2"].is_string()) {
+               names.insert(config["indicator2"].get<std::string>());
+            }
+            // TODO: Add logic here if we later allow Price vs Indicator crosses
+            } else if (type == "AND" || type == "OR") {
                  if (config.contains("conditions") && config["conditions"].is_array()) {
                      for (const auto& sub_conf : config["conditions"]) {
                          collectIndicatorNames(sub_conf, names); // Recurse

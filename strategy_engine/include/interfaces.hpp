@@ -15,11 +15,13 @@ namespace strategy_engine {
     // Can be expanded later (e.g., include multiple timeframes, order book)
     struct MarketDataSnapshot {
         core::Timestamp current_time;
+        const core::Candle* previous_candle = nullptr;
         const core::Candle* current_candle = nullptr; // Pointer to current primary candle
         // Map to hold indicator results (e.g., "SMA(10)" -> 123.45)
         // Using double directly for simplicity now, could use TimeSeries<double>::value_type
         std::map<std::string, double> indicator_values;
         // TODO: Add access to previous candles/indicators if needed by conditions
+        std::map<std::string, double> indicator_values_prev; // <<<--- ADDED
     };
 
     // --- Condition Interface ---
