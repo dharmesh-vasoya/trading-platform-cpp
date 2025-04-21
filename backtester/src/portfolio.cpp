@@ -1,8 +1,11 @@
 #include "portfolio.hpp"
+#include "logging.hpp" // <<<--- ADD THIS
+#include "utils.hpp"   // <<<--- ADD THIS
 #include <stdexcept> // For invalid_argument
 #include <numeric>   // For std::accumulate (used in getCurrentEquity)
 
 namespace backtester {
+
 
     Portfolio::Portfolio(double initial_capital)
         : initial_capital_(initial_capital), cash_(initial_capital) {
@@ -64,23 +67,71 @@ namespace backtester {
           }
      }
 
-    // --- TODO: Implement recordTrade ---
-    void Portfolio::recordTrade(core::Timestamp timestamp,
-                               const std::string& instrument_key,
-                               core::SignalAction action, // Not directly used yet, logic based on quantity sign
-                               long long quantity, // Positive for buy, Negative for sell
-                               double execution_price,
-                               double commission)
+     void Portfolio::recordTrade(core::Timestamp timestamp,
+        const std::string& instrument_key,
+        core::SignalAction action, // Use this to determine buy/sell direction if quantity isn't signed
+        long long quantity, // Let's assume positive quantity, action determines direction
+        double execution_price,
+        double commission)
     {
-         // Needs careful implementation:
-         // 1. Check if quantity is non-zero
-         // 2. Calculate trade value = quantity * execution_price
-         // 3. Calculate cost = trade value (negative for buy, positive for sell) - commission
-         // 4. Check if enough cash for buys (cash_ + cost >= 0 ?) -> Handle margin later
-         // 5. Update cash_: cash_ += cost
-         // 6. Update positions_: positions_[instrument_key] += quantity
-         // 7. If positions_[instrument_key] becomes 0, maybe remove key from map?
-         // 8. Record the trade details somewhere (e.g., a trade log vector)
+    if (quantity <= 0) {
+    core::logging::getLogger()->warn("Attempted to record trade with zero or negative quantity: {}", quantity);
+    return;
+    }
+
+    double trade_value = quantity * execution_price;
+    double cost = 0.0;
+    long long position_change = 0;
+
+    switch(action) {
+    case core::SignalAction::EnterLong:
+    case core::SignalAction::ExitShort: // Covering short is effectively a buy
+    cost = -trade_value - commission; // Money out
+    position_change = quantity;       // Position increases
+    break;
+    case core::SignalAction::EnterShort:
+    case core::SignalAction::ExitLong: // Selling long is effectively a sell
+    cost = trade_value - commission; // Money in
+    position_change = -quantity;     // Position decreases
+    break;
+    case core::SignalAction::None:
+    default:
+    core::logging::getLogger()->warn("recordTrade called with invalid action: {}", static_cast<int>(action));
+    return;
+    }
+
+    // Basic checks (can enhance later)
+    if (cash_ + cost < 0) {
+        core::logging::getLogger()->error("Insufficient cash for trade! Cash: {:.2f}, Cost: {:.2f}. Trade ignored.", cash_, cost);
+        // In a real system, handle margin, order rejection etc.
+        return;
+    }
+
+    // Update portfolio
+    cash_ += cost;
+    positions_[instrument_key] += position_change;
+    trade_count_++;
+
+    // Remove instrument from map if position is flat
+    if (positions_[instrument_key] == 0) {
+    positions_.erase(instrument_key);
+    }
+
+    core::logging::getLogger()->info("Trade Recorded: Time={}, Inst={}, Action={}, Qty={}, Price={:.2f}, Comm={:.2f}, Cost={:.2f}, NewCash={:.2f}, NewPosQty={}",
+    core::utils::timestampToString(timestamp), // Need utils include in portfolio.cpp? Or pass string
+    instrument_key,
+    static_cast<int>(action), // Log enum value for now
+    position_change, // Log the change +/- quantity
+    execution_price,
+    commission,
+    cost,
+    cash_,
+    getPositionQuantity(instrument_key) // Log final position
+    );
+
+    // Optional: Record equity again immediately after trade?
+    // std::map<std::string, double> prices = {{instrument_key, execution_price}};
+    // recordTimestampValue(timestamp, prices);
     }
 
 

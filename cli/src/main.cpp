@@ -26,6 +26,7 @@
 #include <fstream>            // For std::ifstream
 #include <nlohmann/json.hpp>  // For json parsing
 #include "strategy_factory.hpp" // Include the factory class header
+#include "backtester.hpp" // <<<--- ADD THIS
 #include <memory>             // For std::unique_ptr
 
 int main(int argc, char* argv[]) {
@@ -220,52 +221,52 @@ int main(int argc, char* argv[]) {
         logger->info("--- Tests Complete ---");
 
         // ======================================================
-        // --- Temporary StrategyFactory Test Code ---
+        // --- Run Backtest ---
         // ======================================================
-        logger->info("--- Testing StrategyFactory ---");
-        std::unique_ptr<strategy_engine::IStrategy> loaded_strategy = nullptr;
-        std::string strategy_file_path = "strategies/simple_sma_trend.json"; // Relative to execution dir (build/cli) ? No, CWD usually.
-        // Let's assume execution from project root for now for simplicity:
-        // std::string strategy_file_path = "strategies/simple_sma_trend.json";
-        // If running from build/cli, path would be "../../strategies/simple_sma_trend.json"
-        // Using absolute path might be easier for test:
-        // std::string strategy_file_path = "/home/vboxuser/trading_platform_native/strategies/simple_sma_trend.json";
+        logger->info("---=== Starting Backtest Run ===---");
 
+        // 1. Load Strategy Config from JSON
+        std::string strategy_file_path = "strategies/simple_sma_trend.json";
+        using json = nlohmann::json; // Alias for convenience
+
+        json strategy_config; // Use using alias from factory header? No, define here.
+
+        logger->info("Loading strategy config from: {}", strategy_file_path);
         try {
-            logger->info("Attempting to load strategy file: {}", strategy_file_path);
             std::ifstream ifs(strategy_file_path);
             if (!ifs.is_open()) {
                 throw std::runtime_error(fmt::format("Failed to open strategy file: {}", strategy_file_path));
             }
-
-            nlohmann::json strategy_config = nlohmann::json::parse(ifs); // Parse JSON stream
-            ifs.close(); // Close file stream
-
-            logger->info("JSON parsed successfully. Attempting to create strategy...");
-            loaded_strategy = strategy_engine::StrategyFactory::createStrategy(strategy_config);
-
-            if (loaded_strategy) {
-                logger->info("StrategyFactory successfully created strategy: '{}'", loaded_strategy->getName());
-                logger->info(" Required Instruments: {}", fmt::join(loaded_strategy->getRequiredInstruments(), ", "));
-                logger->info(" Required Timeframes: {}", fmt::join(loaded_strategy->getRequiredTimeframes(), ", "));
-                logger->info(" Required Indicators: {}", fmt::join(loaded_strategy->getRequiredIndicatorNames(), ", "));
-                // TODO: Later, add logging for created rules/conditions if needed
-            } else {
-                logger->error("StrategyFactory failed to create strategy from config.");
-            }
-
-        } catch (const nlohmann::json::parse_error& e) {
-            logger->error("JSON Parsing Error loading strategy file '{}': {}", strategy_file_path, e.what());
+            strategy_config = json::parse(ifs);
+            ifs.close();
+            logger->info("Strategy config loaded successfully.");
         } catch (const std::exception& e) {
-            logger->error("Error during StrategyFactory test: {}", e.what());
+             logger->critical("Failed to load or parse strategy config file '{}': {}", strategy_file_path, e.what());
+             return 1; // Exit if config cannot be loaded
         }
-        logger->info("--- StrategyFactory Test Complete ---");
+
+        // 2. Define Backtest Parameters
+        // TODO: Get these from command line args later
+        double initial_capital = 100000.0; // Example: 1 Lakh
+        std::string start_date = "2016-01-01"; // Example Start Date (adjust to available data)
+        std::string end_date = "2016-12-31";   // Example End Date (adjust to available data)
+        logger->info("Backtest Parameters: Capital={:.2f}, Start={}, End={}", initial_capital, start_date, end_date);
+
+        // 3. Create and Run Backtester
+        // Note: db_manager connection is handled inside backtester.run now
+        backtester::Backtester the_backtester(db_manager, initial_capital);
+        bool success = the_backtester.run(strategy_config, start_date, end_date);
+
+        if (success) {
+             logger->info("---=== Backtest Run Finished Successfully ===---");
+             // TODO: Print metrics from the_backtester.getMetrics() later
+        } else {
+              logger->error("---=== Backtest Run Failed ===---");
+        }
         // ======================================================
-        // --- End Temporary Test Code ---
+        // --- End Backtest Run ---
         // ======================================================
 
-        // --- Core Logic (Placeholder) ---
-        logger->warn("No backtesting logic implemented yet.");
         logger->info("Trading Platform CLI finished.");
 
     // --- Exception Handling ---
