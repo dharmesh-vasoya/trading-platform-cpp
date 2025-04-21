@@ -23,6 +23,11 @@
 #include <spdlog/spdlog.h>
 #include <spdlog/logger.h>
 
+#include <fstream>            // For std::ifstream
+#include <nlohmann/json.hpp>  // For json parsing
+#include "strategy_factory.hpp" // Include the factory class header
+#include <memory>             // For std::unique_ptr
+
 int main(int argc, char* argv[]) {
     // Define logger pointer early in the main scope
     std::shared_ptr<spdlog::logger> logger = nullptr;
@@ -213,6 +218,51 @@ int main(int argc, char* argv[]) {
             logger->critical("DB connection failed. Cannot proceed with tests.");
         }
         logger->info("--- Tests Complete ---");
+
+        // ======================================================
+        // --- Temporary StrategyFactory Test Code ---
+        // ======================================================
+        logger->info("--- Testing StrategyFactory ---");
+        std::unique_ptr<strategy_engine::IStrategy> loaded_strategy = nullptr;
+        std::string strategy_file_path = "strategies/simple_sma_trend.json"; // Relative to execution dir (build/cli) ? No, CWD usually.
+        // Let's assume execution from project root for now for simplicity:
+        // std::string strategy_file_path = "strategies/simple_sma_trend.json";
+        // If running from build/cli, path would be "../../strategies/simple_sma_trend.json"
+        // Using absolute path might be easier for test:
+        // std::string strategy_file_path = "/home/vboxuser/trading_platform_native/strategies/simple_sma_trend.json";
+
+        try {
+            logger->info("Attempting to load strategy file: {}", strategy_file_path);
+            std::ifstream ifs(strategy_file_path);
+            if (!ifs.is_open()) {
+                throw std::runtime_error(fmt::format("Failed to open strategy file: {}", strategy_file_path));
+            }
+
+            nlohmann::json strategy_config = nlohmann::json::parse(ifs); // Parse JSON stream
+            ifs.close(); // Close file stream
+
+            logger->info("JSON parsed successfully. Attempting to create strategy...");
+            loaded_strategy = strategy_engine::StrategyFactory::createStrategy(strategy_config);
+
+            if (loaded_strategy) {
+                logger->info("StrategyFactory successfully created strategy: '{}'", loaded_strategy->getName());
+                logger->info(" Required Instruments: {}", fmt::join(loaded_strategy->getRequiredInstruments(), ", "));
+                logger->info(" Required Timeframes: {}", fmt::join(loaded_strategy->getRequiredTimeframes(), ", "));
+                logger->info(" Required Indicators: {}", fmt::join(loaded_strategy->getRequiredIndicatorNames(), ", "));
+                // TODO: Later, add logging for created rules/conditions if needed
+            } else {
+                logger->error("StrategyFactory failed to create strategy from config.");
+            }
+
+        } catch (const nlohmann::json::parse_error& e) {
+            logger->error("JSON Parsing Error loading strategy file '{}': {}", strategy_file_path, e.what());
+        } catch (const std::exception& e) {
+            logger->error("Error during StrategyFactory test: {}", e.what());
+        }
+        logger->info("--- StrategyFactory Test Complete ---");
+        // ======================================================
+        // --- End Temporary Test Code ---
+        // ======================================================
 
         // --- Core Logic (Placeholder) ---
         logger->warn("No backtesting logic implemented yet.");

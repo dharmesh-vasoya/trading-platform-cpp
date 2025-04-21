@@ -9,7 +9,7 @@
 #include "exceptions.hpp"
 #include "common_types.hpp"
 #include "spdlog/fmt/bundled/core.h" // Use direct path for safety
-
+#include "price_indicator_condition.hpp"
 #include <stdexcept>              // For std::invalid_argument
 #include <vector>
 #include <string>
@@ -54,16 +54,8 @@ namespace strategy_engine {
     
     } // end anonymous namespace
     
-
-    // --- Forward Declarations for Private Helpers ---
-    // Necessary if definitions appear after their first use (like recursive calls)
-    static std::unique_ptr<ICondition> parseCondition(const json& condition_config);
-    static std::unique_ptr<IRule> parseRule(const json& rule_config);
-    static void collectIndicatorNames(const json& condition_config, std::set<std::string>& names);
-
-
     // --- Recursive Helper to Parse Conditions ---
-    static std::unique_ptr<ICondition> parseCondition(const json& config) {
+    std::unique_ptr<ICondition> StrategyFactory::parseCondition(const json& config) {
         if (!config.is_object() || !config.contains("type") || !config["type"].is_string()) {
             throw std::invalid_argument("Condition config must be an object with a 'type' (string).");
         }
@@ -106,7 +98,17 @@ namespace strategy_engine {
                 } else {
                     throw std::invalid_argument("Indicator condition requires 'value' (number) or 'indicator2' (string).");
                 }
-            } else if (type == "AND" || type == "OR") {
+            } else if (type == "PriceIndicator") {
+                if (!config.contains("price_field") || !config["price_field"].is_string() ||
+                    !config.contains("op") || !config["op"].is_string() ||
+                    !config.contains("indicator") || !config["indicator"].is_string()) {
+                    throw std::invalid_argument("PriceIndicator condition requires 'price_field'(string), 'op'(string), 'indicator'(string).");
+                }
+                PriceField field = stringToPriceField(config["price_field"].get<std::string>());
+                ComparisonOp op = stringToCompOp(config["op"].get<std::string>());
+                std::string indicator_name = config["indicator"].get<std::string>();
+                return std::make_unique<PriceIndicatorCondition>(field, op, indicator_name);
+           } else if (type == "AND" || type == "OR") {
                 if (!config.contains("conditions") || !config["conditions"].is_array() || config["conditions"].empty()) {
                     throw std::invalid_argument(fmt::format("{} condition requires 'conditions' (non-empty array).", type));
                 }
@@ -138,7 +140,7 @@ namespace strategy_engine {
     }
 
     // --- Helper to Parse Rules ---
-    static std::unique_ptr<IRule> parseRule(const json& config) {
+    std::unique_ptr<IRule> StrategyFactory::parseRule(const json& config) {
         if (!config.is_object() ||
             !config.contains("rule_name") || !config["rule_name"].is_string() ||
             !config.contains("action") || !config["action"].is_string() ||
@@ -169,7 +171,7 @@ namespace strategy_engine {
         }
    }
     // --- Helper to Collect Indicator Names (Recursive) ---
-    static void collectIndicatorNames(const json& config, std::set<std::string>& names) { // NEW Definition - Changed vector to set
+    void StrategyFactory::collectIndicatorNames(const json& config, std::set<std::string>& names) {
         if (!config.is_object()) return;
 
          if (config.contains("type") && config["type"].is_string()) {
@@ -182,7 +184,11 @@ namespace strategy_engine {
                  if (config.contains("indicator2") && config["indicator2"].is_string()) {
                      names.insert(config["indicator2"].get<std::string>());
                  }
-             } else if (type == "AND" || type == "OR") {
+             } else if (type == "PriceIndicator") {
+                if (config.contains("indicator") && config["indicator"].is_string()) {
+                    names.insert(config["indicator"].get<std::string>());
+                }
+           } else if (type == "AND" || type == "OR") {
                  if (config.contains("conditions") && config["conditions"].is_array()) {
                      for (const auto& sub_conf : config["conditions"]) {
                          collectIndicatorNames(sub_conf, names); // Recurse

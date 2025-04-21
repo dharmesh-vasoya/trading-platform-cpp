@@ -1,0 +1,32 @@
+{
+    "strategy_name": "SimpleSMATrend",
+    "instruments": ["NSE_EQ|INE002A01018"],
+    "timeframes": ["day"],
+    "indicators": [
+      {"name": "SMA(10)"}
+    ],
+    "entry_rules": [
+      {
+        "rule_name": "EnterLongOnCloseAboveSMA10",
+        "action": "EnterLong",
+        "condition": {
+          "type": "PriceIndicator",
+          "price_field": "Close",
+          "op": "GT",
+          "indicator": "SMA(10)"
+        }
+      }
+    ],
+    "exit_rules": [
+       {
+        "rule_name": "ExitLongOnCloseBelowSMA10",
+        "action": "ExitLong",
+        "condition": {
+          "type": "PriceIndicator",
+          "price_field": "Close",
+          "op": "LT",
+          "indicator": "SMA(10)"
+        }
+      }
+    ]
+  }
