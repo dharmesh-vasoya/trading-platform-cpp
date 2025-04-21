@@ -1,7 +1,8 @@
 #include "backtester.hpp"
 #include "strategy_factory.hpp" // Need factory to create strategy
 #include "sma_indicator.hpp"    // Need concrete indicators for createIndicator factory <<< USE SHORT PATH
-// Add other indicator headers later (rsi_indicator.hpp etc.)
+#include "rsi_indicator.hpp"
+#include "common_types.hpp" 
 #include "logging.hpp"          // <<< USE SHORT PATH
 #include "utils.hpp"            // <<< USE SHORT PATH
 #include "exceptions.hpp"       // <<< USE SHORT PATH
@@ -177,7 +178,14 @@ namespace backtester {
              }
              logger->debug("Creating SMAIndicator({})", period);
              return std::make_unique<indicators::SmaIndicator>(period);
-         }
+         } else if (base_name == "RSI") {
+            if (period <= 0) {
+                  logger->error("Invalid period {} for RSI indicator '{}'", period, name);
+                  return nullptr;
+            }
+            logger->debug("Creating RsiIndicator({})", period);
+            return std::make_unique<indicators::RsiIndicator>(period);
+       }
          // --- Add cases for other indicators ---
          // else if (base_name == "RSI") {
          //    if (period <= 0) { /* error */ return nullptr; }
@@ -350,56 +358,93 @@ namespace backtester {
 
     void Backtester::executeSignal(core::Timestamp timestamp, const core::Candle& current_candle, core::SignalAction signal) {
         auto logger = core::logging::getLogger();
+        if (!strategy_ || !portfolio_) {
+             logger->error("Cannot execute signal: Strategy or Portfolio not initialized.");
+             return;
+        }
+    
         logger->debug("Executing Signal: Time={}, Signal={}, Candle Close={:.2f}",
                      core::utils::timestampToString(timestamp), static_cast<int>(signal), current_candle.close);
-  
-        // --- Simple Execution & Sizing Logic ---
-        // TODO: Replace with more sophisticated logic later
+    
         long long current_position = portfolio_->getPositionQuantity(primary_instrument_key_);
-        long long quantity_to_trade = 0;
         double execution_price = current_candle.close; // Simple fill at close
-        double commission = 0.01 * execution_price;     // Example: 0.01 currency unit commission per share
-  
-        // --- Basic Sizing: Trade fixed 10 shares for now ---
-        long long trade_size = 10;
-  
-        // Determine quantity based on signal and current position
-        switch(signal) {
-            case core::SignalAction::EnterLong:
-                if (current_position == 0) { // Only enter if flat
-                     quantity_to_trade = trade_size;
-                     logger->info("-> Attempting to BUY {} shares", quantity_to_trade);
-                } else { logger->debug("Ignoring EnterLong signal, already have position {}.", current_position); }
-                break;
-            case core::SignalAction::ExitLong:
-                 if (current_position > 0) { // Only exit if long
-                     quantity_to_trade = current_position; // Exit entire position
-                     logger->info("-> Attempting to SELL {} shares (Exit Long)", quantity_to_trade);
-                } else { logger->debug("Ignoring ExitLong signal, not currently long."); }
-                break;
-            case core::SignalAction::EnterShort:
-                 if (current_position == 0) { // Only enter if flat
-                     quantity_to_trade = trade_size; // Sell this many to enter short
-                     logger->info("-> Attempting to SELL {} shares (Enter Short)", quantity_to_trade);
-                } else { logger->debug("Ignoring EnterShort signal, already have position {}.", current_position); }
-                break;
-            case core::SignalAction::ExitShort:
-                  if (current_position < 0) { // Only exit if short
-                     quantity_to_trade = -current_position; // Buy back entire position (positive quantity)
-                     logger->info("-> Attempting to BUY {} shares (Exit Short)", quantity_to_trade);
-                } else { logger->debug("Ignoring ExitShort signal, not currently short."); }
-                break;
-            case core::SignalAction::None:
-            default:
-                break; // No trade
+        // TODO: Make commission configurable (e.g., strategy param or backtester setting)
+        double commission_per_share = 0.01; // Example fixed commission per share
+        long long quantity_to_trade = 0; // This will be calculated based on sizing
+    
+        // --- Get Sizing Parameters from Strategy ---
+        auto sizing_method = strategy_->getSizingMethod();
+        double sizing_value = strategy_->getSizingValue();
+        bool sizing_is_percentage = strategy_->isSizingValuePercentage();
+    
+    
+        // --- Calculate Trade Quantity based on Sizing Method ---
+        if (signal == core::SignalAction::EnterLong || signal == core::SignalAction::EnterShort) {
+             if (current_position != 0) {
+                 logger->debug("Ignoring Entry signal [{}] because position is not flat ({}).", static_cast<int>(signal), current_position);
+                 return; // Ignore entry if already in position
+             }
+    
+             if (sizing_method == strategy_engine::SizingMethod::Quantity) {
+                 quantity_to_trade = static_cast<long long>(sizing_value);
+             } else if (sizing_method == strategy_engine::SizingMethod::CapitalBased) {
+                  double capital_to_allocate = 0.0;
+                  if (sizing_is_percentage) {
+                       // Use Initial Capital for max allocation % (like Streak often does)
+                       // Alternatively use current equity: portfolio_->getCurrentEquity(...) - requires prices map
+                       capital_to_allocate = initial_capital_ * (sizing_value / 100.0);
+                  } else {
+                       capital_to_allocate = sizing_value; // Absolute amount
+                  }
+    
+                  if (execution_price > 1e-9) { // Avoid division by zero/tiny price
+                      quantity_to_trade = static_cast<long long>(std::floor(capital_to_allocate / execution_price));
+                  } else {
+                       logger->error("Cannot calculate quantity: Execution price is too low ({}).", execution_price);
+                       quantity_to_trade = 0;
+                  }
+             } else {
+                  logger->error("Unknown sizing method encountered in executeSignal.");
+                   quantity_to_trade = 0;
+             }
+    
+              if (quantity_to_trade <= 0) {
+                   logger->warn("Calculated entry quantity is zero or negative ({}). Ignoring signal.", quantity_to_trade);
+                   quantity_to_trade = 0; // Ensure it's 0 if calculation failed
+              }
+    
+        } else if (signal == core::SignalAction::ExitLong) {
+             if (current_position > 0) { // Only exit if long
+                 quantity_to_trade = current_position; // Exit entire position
+             } else { logger->debug("Ignoring ExitLong signal, not currently long."); return; }
+        } else if (signal == core::SignalAction::ExitShort) {
+             if (current_position < 0) { // Only exit if short
+                 quantity_to_trade = -current_position; // Buy back entire position (positive quantity)
+             } else { logger->debug("Ignoring ExitShort signal, not currently short."); return; }
+        } else {
+             return; // No action for SignalAction::None
         }
-  
-        // If a trade was determined, record it
-        if (quantity_to_trade != 0) {
-             // Pass the original signal to recordTrade to determine cost direction
+    
+    
+        // --- Record Trade if Quantity > 0 ---
+        if (quantity_to_trade > 0) {
+             // Calculate commission for this leg
+             double commission = commission_per_share * quantity_to_trade;
+    
+             // Log attempt
+             if (signal == core::SignalAction::EnterLong || signal == core::SignalAction::ExitShort) {
+                  logger->info("-> Attempting to BUY {} shares", quantity_to_trade);
+             } else { // EnterShort or ExitLong
+                  logger->info("-> Attempting to SELL {} shares ({})", quantity_to_trade,
+                               (signal == core::SignalAction::EnterShort ? "Enter Short" : "Exit Long"));
+             }
+    
+             // Pass the original signal, positive quantity, price, commission
              portfolio_->recordTrade(timestamp, primary_instrument_key_, signal,
-                                     std::abs(quantity_to_trade), // Quantity is always positive in recordTrade
+                                     quantity_to_trade,
                                      execution_price, commission);
+        } else {
+             logger->debug("No trade executed for signal [{}] (calculated quantity={}).", static_cast<int>(signal), quantity_to_trade);
         }
     }
 
@@ -408,49 +453,105 @@ namespace backtester {
         logger->info("Calculating performance metrics...");
    
         const auto& equity_curve = portfolio_->getEquityCurve();
+        const auto& trade_log = portfolio_->getTradeLog(); // Get the completed trades
+   
         if (equity_curve.size() < 2) {
             logger->warn("Not enough equity points ({}) to calculate metrics.", equity_curve.size());
-            // Set default metrics? For now, just return.
             return;
         }
    
         BacktestMetrics metrics; // Create instance to store results
+        metrics.total_executions = portfolio_->getTotalExecutions();
    
-        // --- Total Return ---
+        // --- PnL and Return ---
         double final_equity = equity_curve.back().total_equity;
-        metrics.total_return_pct = (final_equity - initial_capital_) / initial_capital_;
-
+        // Ensure any open positions are marked-to-market for final equity?
+        // getCurrentEquity already does this based on last candle price passed to recordTimestampValue.
         metrics.total_pnl = final_equity - initial_capital_;
+        metrics.total_return_pct = (initial_capital_ > 1e-9) ? metrics.total_pnl / initial_capital_ : 0.0;
    
         // --- Max Drawdown ---
         double peak_equity = initial_capital_;
-        double max_drawdown = 0.0; // Max drawdown observed so far (positive value)
-   
+        double max_drawdown = 0.0;
         for (const auto& state : equity_curve) {
             peak_equity = std::max(peak_equity, state.total_equity);
-            double current_drawdown = (peak_equity > 1e-9) ? (peak_equity - state.total_equity) / peak_equity : 0.0; // Avoid division by zero/small numbers
+            double current_drawdown = (peak_equity > 1e-9) ? (peak_equity - state.total_equity) / peak_equity : 0.0;
             max_drawdown = std::max(max_drawdown, current_drawdown);
         }
         metrics.max_drawdown_pct = max_drawdown;
    
-        // --- Total Trades ---
-        metrics.total_trades = portfolio_->getTotalTrades();
-
-        logger->debug("Metrics Values: FinalEquity={:.4f}, InitialCapital={:.4f}, Calculated PnL={:.4f}, PctReturn={:.6f}, MaxDD={:.6f}, Trades={}",
-            final_equity,
-            initial_capital_,
-            metrics.total_pnl, // Log the value stored in the struct
-            metrics.total_return_pct,
-            metrics.max_drawdown_pct,
-            metrics.total_trades);
+        // --- Trade-Based Metrics ---
+        metrics.round_trip_trades = static_cast<int>(trade_log.size()); // Count completed round trips
+        int winning_trades = 0;
+        double gross_profit = 0.0;
+        double gross_loss = 0.0;
+   
+        for (const auto& trade : trade_log) {
+             if (trade.pnl > 0) {
+                 winning_trades++;
+                 gross_profit += trade.pnl;
+             } else if (trade.pnl < 0) {
+                  gross_loss += trade.pnl; // Loss is negative
+             }
+             // Ignore trades with PnL == 0 for win rate etc.
+        }
+   
+        int losing_trades = metrics.round_trip_trades - winning_trades; // Excludes zero PnL trades
+   
+        if (metrics.round_trip_trades > 0) {
+            metrics.win_rate = static_cast<double>(winning_trades) / metrics.round_trip_trades;
+        } else {
+             metrics.win_rate = 0.0;
+        }
+   
+        if (std::abs(gross_loss) > 1e-9) {
+            metrics.profit_factor = gross_profit / std::abs(gross_loss);
+        } else if (gross_profit > 1e-9) {
+             metrics.profit_factor = std::numeric_limits<double>::infinity(); // Or some large number
+        } else {
+             metrics.profit_factor = 0.0; // Or 1.0 if no profit/loss? Define convention.
+        }
+   
+   
+         metrics.avg_win_pnl = (winning_trades > 0) ? gross_profit / winning_trades : 0.0;
+         metrics.avg_loss_pnl = (losing_trades > 0) ? gross_loss / losing_trades : 0.0; // Will be negative
+   
+   
+        // --- Sharpe Ratio (Simplified Example - Daily Data) ---
+        // Requires calculating periodic returns from the equity curve
+        if (equity_curve.size() > 1) {
+             std::vector<double> daily_returns;
+             daily_returns.reserve(equity_curve.size() - 1);
+             for (size_t i = 1; i < equity_curve.size(); ++i) {
+                  if (equity_curve[i-1].total_equity > 1e-9) { // Avoid division by zero
+                       daily_returns.push_back((equity_curve[i].total_equity / equity_curve[i-1].total_equity) - 1.0);
+                  } else {
+                       daily_returns.push_back(0.0);
+                  }
+             }
+   
+             if (daily_returns.size() > 1) {
+                  double sum_returns = std::accumulate(daily_returns.begin(), daily_returns.end(), 0.0);
+                  double mean_return = sum_returns / daily_returns.size();
+   
+                  double sq_sum = std::inner_product(daily_returns.begin(), daily_returns.end(), daily_returns.begin(), 0.0);
+                  double std_dev = std::sqrt(sq_sum / daily_returns.size() - mean_return * mean_return);
+   
+                  if (std_dev > 1e-9) {
+                       // Assuming 0% risk-free rate and ~252 trading days per year
+                       double risk_free_rate_daily = 0.0;
+                       double annualization_factor = std::sqrt(252.0); // Adjust if data isn't daily
+                       // metrics.sharpe_ratio = annualization_factor * (mean_return - risk_free_rate_daily) / std_dev;
+                       // Let's skip Sharpe for now as it adds complexity
+                  }
+             }
+        }
    
    
         // --- Log Metrics ---
-        metrics.logMetrics(); // Use helper function to log
+        metrics.logMetrics();
    
-        // Store metrics? Make accessible via getter?
-        // For now, just logging. Add member variable 'BacktestMetrics results_' if needed.
-   
+        // Store metrics in Backtester? Add member variable BacktestMetrics results_;
    }
 
     // Getter added for completeness, might need adjustment

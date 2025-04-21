@@ -11,6 +11,7 @@ namespace core {
     // Using system_clock for time points, can be adjusted if needed
     using Timestamp = std::chrono::system_clock::time_point;
 
+
     struct Candle {
         Timestamp timestamp;
         double open = 0.0;
@@ -67,16 +68,18 @@ namespace core {
         // Potentially add realized/unrealized PnL here
     };
 
+    
     struct Trade {
         std::string instrument_key;
-        Timestamp entry_time;
-        Timestamp exit_time;
-        SignalAction entry_action; // EnterLong or EnterShort
-        long long quantity = 0;
+        core::SignalAction entry_action; // EnterLong or EnterShort
+        core::Timestamp entry_time;
+        core::Timestamp exit_time;
+        long long quantity = 0;         // Absolute quantity traded
         double entry_price = 0.0;
         double exit_price = 0.0;
-        double commission = 0.0; // Total commission for entry+exit
-        double pnl = 0.0; // Profit or Loss for this trade
+        double commission = 0.0;      // Total commission (entry + exit)
+        double pnl = 0.0;             // Profit or Loss for this trade
+        double return_pct = 0.0;      // PnL / Entry Value
     };
 
     // Basic TimeSeries concept (can be refined later)

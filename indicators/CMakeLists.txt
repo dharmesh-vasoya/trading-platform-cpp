@@ -4,6 +4,7 @@
 # Contains C++ indicator wrappers
 add_library(indicators STATIC
     src/sma_indicator.cpp
+    src/rsi_indicator.cpp
     # Add src/rsi_indicator.cpp etc. here later
 )
 

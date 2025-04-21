@@ -7,6 +7,7 @@
 
 // Forward declarations or include necessary core types
 #include "datatypes.hpp" // Provides Candle, SignalAction, TimeSeries etc.
+#include "common_types.hpp"  // <<<--- ADD THIS INCLUDE (Provides enums like SizingMethod)
 
 namespace strategy_engine {
 
@@ -50,31 +51,21 @@ namespace strategy_engine {
     // --- Strategy Interface ---
     // Represents a complete trading strategy
     class IStrategy {
-    public:
-        virtual ~IStrategy() = default;
-
-        // Get the unique name/ID of the strategy
-        virtual std::string getName() const = 0;
-
-        // Get list of instrument keys required by this strategy
-        virtual const std::vector<std::string>& getRequiredInstruments() const = 0;
-
-        // Get list of timeframes required (e.g., "day", "5minute")
-        virtual const std::vector<std::string>& getRequiredTimeframes() const = 0;
-
-        // Get configurations for indicators needed (e.g., map<string, params>)
-        // This tells the backtester which indicators to calculate.
-        // We might need a dedicated IndicatorConfig struct later.
-        virtual const std::vector<std::string>& getRequiredIndicatorNames() const = 0; // Simplified for now
-
-        // Evaluate all rules based on the current snapshot
-        // Returns the triggered action (EnterLong, ExitShort, etc.) or None
-        virtual core::SignalAction evaluate(const MarketDataSnapshot& snapshot) = 0;
-         // Non-const because strategy might maintain internal state (e.g., trailing stops)
-
-        // Optional: Methods for position sizing, stop loss calculation etc.
-        // virtual double calculatePositionSize(double portfolio_value, double price) const = 0;
-        // virtual double calculateStopLoss(double entry_price) const = 0;
-    };
-
+        public:
+            virtual ~IStrategy() = default;
+    
+            // --- Keep existing methods ---
+            virtual std::string getName() const = 0;
+            virtual const std::vector<std::string>& getRequiredInstruments() const = 0;
+            virtual const std::vector<std::string>& getRequiredTimeframes() const = 0;
+            virtual const std::vector<std::string>& getRequiredIndicatorNames() const = 0;
+            virtual core::SignalAction evaluate(const MarketDataSnapshot& snapshot) = 0;
+            virtual core::PositionState getCurrentPosition() const = 0;
+    
+            // --- ADD THESE SIZING GETTERS BACK ---
+            virtual SizingMethod getSizingMethod() const = 0;
+            virtual double getSizingValue() const = 0;
+            virtual bool isSizingValuePercentage() const = 0;
+            // --- END ADDITION ---
+        };
 } // namespace strategy_engine

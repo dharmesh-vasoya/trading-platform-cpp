@@ -2,6 +2,11 @@
     "strategy_name": "SimpleSMATrend",
     "instruments": ["NSE_EQ|INE002A01018"],
     "timeframes": ["day"],
+    "position_sizing": {
+      "method": "Quantity",
+      "value": 2.0,
+      "is_percentage": true
+    },
     "indicators": [
       {"name": "SMA(10)"}
     ],

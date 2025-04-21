@@ -1,4 +1,6 @@
 #pragma once
+#include "datatypes.hpp"     // Use short path (Provides core types)
+#include "common_types.hpp"  // <<<--- ADD THIS INCLUDE (Provides SizingMethod enum)
 
 namespace strategy_engine {
 
@@ -18,5 +20,12 @@ namespace strategy_engine {
         LTE, // Less Than or Equal To (<=)
         EQ   // Equal To (==)
     };
+    
+    enum class SizingMethod {
+        Quantity,      // Fixed number of shares/lots
+        CapitalBased   // Allocate max capital (absolute or % of initial)
+        // Add RiskBased later if needed
+    };
+    
 
 } // namespace strategy_engine

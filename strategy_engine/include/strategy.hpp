@@ -2,6 +2,7 @@
 
 #include "interfaces.hpp" // Includes IRule, IStrategy, MarketDataSnapshot etc.
 #include "datatypes.hpp"  // Includes PositionState, SignalAction etc. (use short path)
+#include "common_types.hpp"
 #include <string>
 #include <vector>
 #include <memory>      // For std::unique_ptr
@@ -21,7 +22,10 @@ namespace strategy_engine {
             std::vector<std::string> required_timeframes,
             std::vector<std::string> required_indicator_names,
             std::vector<std::unique_ptr<IRule>> entry_rules,
-            std::vector<std::unique_ptr<IRule>> exit_rules
+            std::vector<std::unique_ptr<IRule>> exit_rules,
+            SizingMethod sizing_method,
+            double sizing_value,
+            bool is_sizing_value_percentage // Flag for CapitalBased method
         );
 
         virtual ~Strategy() override = default;
@@ -33,8 +37,12 @@ namespace strategy_engine {
         const std::vector<std::string>& getRequiredIndicatorNames() const override;
         core::SignalAction evaluate(const MarketDataSnapshot& snapshot) override;
 
+        SizingMethod getSizingMethod() const override { return sizing_method_; }
+        double getSizingValue() const override { return sizing_value_; }
+        bool isSizingValuePercentage() const override { return is_sizing_value_percentage_; }
+        
         // Get current position state (needed for backtester/execution)
-        core::PositionState getCurrentPosition() const { return current_position_; }
+        core::PositionState getCurrentPosition() const; 
 
     private:
         std::string name_;
@@ -46,6 +54,9 @@ namespace strategy_engine {
         std::vector<std::unique_ptr<IRule>> exit_rules_;
 
         core::PositionState current_position_ = core::PositionState::None; // Track current state
+        SizingMethod sizing_method_;
+        double sizing_value_;
+        bool is_sizing_value_percentage_;
     };
 
 } // namespace strategy_engine

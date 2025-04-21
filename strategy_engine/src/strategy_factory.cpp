@@ -51,6 +51,14 @@ namespace strategy_engine {
             if (lower_str == "close") return PriceField::Close;
             throw std::invalid_argument("Unknown price field string: " + field_str);
         }
+
+        SizingMethod stringToSizingMethod(const std::string& method_str) {
+            std::string lower_str = method_str;
+            std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(), ::tolower);
+            if (lower_str == "quantity") return SizingMethod::Quantity;
+            if (lower_str == "capitalbased") return SizingMethod::CapitalBased;
+            throw std::invalid_argument("Unknown position sizing method: " + method_str);
+       }
     
     } // end anonymous namespace
     
@@ -216,6 +224,44 @@ namespace strategy_engine {
             if (!config.contains("timeframes") || !config["timeframes"].is_array() || config["timeframes"].empty()) throw std::invalid_argument("Config missing 'timeframes' array.");
              std::vector<std::string> timeframes = config["timeframes"].get<std::vector<std::string>>();
 
+            SizingMethod sizing_method = SizingMethod::Quantity; // Default perhaps? Or make required?
+            double sizing_value = 1.0; // Default value
+            bool is_percentage = false; // Default for CapitalBased
+
+            if (config.contains("position_sizing") && config["position_sizing"].is_object()) {
+                const auto& sizing_config = config["position_sizing"];
+                if (!sizing_config.contains("method") || !sizing_config["method"].is_string() ||
+                    !sizing_config.contains("value") || !sizing_config["value"].is_number()) {
+                    throw std::invalid_argument("Strategy config 'position_sizing' object requires 'method'(string) and 'value'(number).");
+                }
+                sizing_method = stringToSizingMethod(sizing_config["method"].get<std::string>());
+                sizing_value = sizing_config["value"].get<double>();
+                if (sizing_value <= 0) throw std::invalid_argument("'position_sizing.value' must be positive.");
+
+                if (sizing_method == SizingMethod::CapitalBased) {
+                    // CapitalBased can be percentage or absolute amount
+                    is_percentage = sizing_config.value("is_percentage", false); // Default to false if not specified
+                    if (is_percentage && (sizing_value <= 0 || sizing_value > 100)) {
+                        throw std::invalid_argument("'position_sizing.value' must be between 0 and 100 when 'is_percentage' is true.");
+                    }
+                } else { // Quantity method
+                    // Ensure value is integer-like for quantity
+                    if (std::floor(sizing_value) != sizing_value) {
+                        logger->warn("Sizing method is Quantity but value '{}' is not an integer. Will use floor().", sizing_value);
+                    }
+                    sizing_value = std::floor(sizing_value);
+                    if (sizing_value < 1) throw std::invalid_argument("'position_sizing.value' must be at least 1 for Quantity method.");
+                }
+
+        } else {
+                // Default if position_sizing block is missing? Or throw error? Let's default for now.
+                logger->warn("Strategy config missing 'position_sizing' object. Defaulting to Quantity=1.");
+                sizing_method = SizingMethod::Quantity;
+                sizing_value = 1.0;
+                is_percentage = false;
+                // Alternatively, make it required:
+                // throw std::invalid_argument("Strategy config requires 'position_sizing' object.");
+        }
              // --- Parse Rules --- // <<<--- UPDATED TO CALL HELPER ---
              if (!config.contains("entry_rules") || !config["entry_rules"].is_array()) throw std::invalid_argument("Config missing 'entry_rules' array.");
              if (!config.contains("exit_rules") || !config["exit_rules"].is_array()) throw std::invalid_argument("Config missing 'exit_rules' array.");
@@ -248,15 +294,18 @@ namespace strategy_engine {
 
 
             // --- Create Strategy Instance ---
-             logger->info("Creating Strategy instance for '{}'", name);
-             auto strategy = std::make_unique<Strategy>(
-                 name,
-                 instruments,
-                 timeframes,
-                 indicator_names, // Use collected names
-                 std::move(entry_rules),
-                 std::move(exit_rules)
-             );
+            logger->info("Creating Strategy instance for '{}'", name);
+            auto strategy = std::make_unique<Strategy>(
+                name,
+                instruments,
+                timeframes,
+                indicator_names,
+                std::move(entry_rules),
+                std::move(exit_rules),
+                sizing_method,             // Pass parsed sizing info
+                sizing_value,              // Pass parsed sizing info
+                is_percentage              // Pass parsed sizing info
+            );
 
             logger->info("Successfully created strategy: '{}'", name);
             return strategy;

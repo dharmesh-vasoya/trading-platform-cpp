@@ -1,6 +1,7 @@
 #include "strategy.hpp"
 #include "logging.hpp" // Use short path
 #include <stdexcept>  // For std::invalid_argument
+#include "common_types.hpp"
 
 namespace strategy_engine {
 
@@ -11,7 +12,10 @@ Strategy::Strategy(
     std::vector<std::string> required_timeframes,
     std::vector<std::string> required_indicator_names,
     std::vector<std::unique_ptr<IRule>> entry_rules,
-    std::vector<std::unique_ptr<IRule>> exit_rules
+    std::vector<std::unique_ptr<IRule>> exit_rules,
+    SizingMethod sizing_method,
+    double sizing_value,
+    bool is_sizing_value_percentage
 ) : name_(std::move(name)),
     // params_(std::move(params)),
     required_instruments_(std::move(required_instruments)),
@@ -19,6 +23,9 @@ Strategy::Strategy(
     required_indicator_names_(std::move(required_indicator_names)),
     entry_rules_(std::move(entry_rules)),
     exit_rules_(std::move(exit_rules)),
+    sizing_method_(sizing_method),          // Store sizing method
+    sizing_value_(sizing_value),            // Store sizing value
+    is_sizing_value_percentage_(is_sizing_value_percentage), // Store flag
     current_position_(core::PositionState::None) // Start flat
 {
     if (name_.empty()) throw std::invalid_argument("Strategy name cannot be empty.");
@@ -28,7 +35,8 @@ Strategy::Strategy(
     // Exit rules might be optional (e.g., fixed stop/profit target handled elsewhere)
     // if (exit_rules_.empty()) throw std::invalid_argument("Strategy must have at least one exit rule.");
 
-    core::logging::getLogger()->debug("Strategy '{}' created.", name_);
+    core::logging::getLogger()->debug("Strategy '{}' created with sizing method {} / value {:.2f} / is_pct {}.", // Use getLogger()
+    name_, static_cast<int>(sizing_method_), sizing_value_, is_sizing_value_percentage_);
 }
 
 
@@ -97,6 +105,10 @@ core::SignalAction Strategy::evaluate(const MarketDataSnapshot& snapshot) {
                   name_, static_cast<int>(resulting_action), static_cast<int>(current_position_));
 
     return resulting_action;
+}
+
+core::PositionState Strategy::getCurrentPosition() const {
+    return current_position_;
 }
 
 
