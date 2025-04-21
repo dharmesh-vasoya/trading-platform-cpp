@@ -1,3 +1,4 @@
+#pragma once
 #include "datatypes.hpp" // Needs Candle, TimeSeries
 #include <string>
 #include <vector>
