@@ -39,6 +39,12 @@ FetchContent_Declare(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
+FetchContent_Declare(
+  CLI11
+  GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git # Or SSH URL
+  GIT_TAG        v2.3.2 # Use a specific release tag
+)
+
 # --- Build Shared Libs OFF ---
 # Ensure all dependencies build as static libraries
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries OFF")
@@ -88,6 +94,7 @@ enable_testing() # Enable testing support
 FetchContent_MakeAvailable(spdlog)
 FetchContent_MakeAvailable(nlohmann_json)
 FetchContent_MakeAvailable(cpr)
+FetchContent_MakeAvailable(CLI11)
 # ta-lib is already handled above
 
 # --- Subdirectories (Modules) ---

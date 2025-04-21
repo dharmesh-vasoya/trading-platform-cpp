@@ -12,6 +12,7 @@ target_link_libraries(trading_cli PRIVATE
     strategy_engine
     backtester
     ${CMAKE_BINARY_DIR}/libta_libc.a # Use the full path
+    CLI11::CLI11
     # Other dependencies linked implicitly via PUBLIC should be okay
 )
 
