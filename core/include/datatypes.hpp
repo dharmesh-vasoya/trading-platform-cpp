@@ -34,6 +34,13 @@ namespace core {
         ExitShort
     };
 
+    // Represents the current state of a strategy's position
+    enum class PositionState {
+        None,  // Flat, no position
+        Long,  // Currently holding a long position
+        Short  // Currently holding a short position
+    };
+
     struct Signal {
         Timestamp timestamp;
         std::string instrument_key;
