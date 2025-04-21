@@ -7,7 +7,11 @@
 // Make sure sqlite3.h is included via database_manager.hpp
 #include <iostream>
 #include <chrono> // For time point conversions
-
+#include <atomic> 
+#include <vector>
+#include <stdexcept>
+#include <chrono>
+#include "utils.hpp" // For timestamp utils
 namespace data
 {
 
@@ -186,120 +190,101 @@ namespace data
     // Placeholder for now:
     // Replace the existing queryCandles function with this one:
     core::TimeSeries<core::Candle> DatabaseManager::queryCandles(
-        const std::string &instrument_key,
-        const std::string &interval,
+        const std::string& instrument_key,
+        const std::string& interval,
         core::Timestamp start_time,
         core::Timestamp end_time)
     {
-        core::TimeSeries<core::Candle> candles; // Vector to store results
-        if (!isConnected())
-        {
-            core::logging::getLogger()->error("Cannot query candles: Not connected to database.");
+        core::TimeSeries<core::Candle> candles;
+        auto logger = core::logging::getLogger();
+        if (!isConnected()) {
+            logger->error("Cannot query candles: Not connected to database.");
             return candles; // Return empty vector
         }
-
-        // Convert C++ Timestamps (std::chrono::system_clock, typically UTC based)
-        // to Unix epoch seconds (integer) for binding
-        auto start_epoch = std::chrono::duration_cast<std::chrono::seconds>(start_time.time_since_epoch()).count();
-        auto end_epoch = std::chrono::duration_cast<std::chrono::seconds>(end_time.time_since_epoch()).count();
-
-        core::logging::getLogger()->debug("Querying candles for {} ({}) between epoch {} ({}) and epoch {} ({})",
-                                          instrument_key, interval, start_epoch, core::utils::timestampToString(start_time),
-                                          end_epoch, core::utils::timestampToString(end_time));
-
-        // Prepare the SQL statement
-        // Compare timestamps by converting them to Unix epoch seconds within SQL using strftime('%s', ...)
-        // const char* sql = R"(
-        //     SELECT timestamp, open, high, low, close, volume -- No open_interest
-        //     FROM historical_candles
-        //     WHERE instrument_key = ?                     -- Placeholder 1
-        //       AND interval = ?                           -- Placeholder 2
-        //       AND strftime('%s', timestamp) >= ?         -- Placeholder 3 (compare epoch seconds)
-        //       AND strftime('%s', timestamp) <= ?         -- Placeholder 4 (compare epoch seconds)
-        //     ORDER BY timestamp ASC;
-        // )";
-        const char *sql = R"(
-        SELECT timestamp, open, high, low, close, volume
-        FROM historical_candles
-        WHERE instrument_key = ?                     -- Placeholder 1
-          AND interval = ?                           -- Placeholder 2
-        ORDER BY timestamp ASC LIMIT 5; -- Limit to 5 rows, remove date filter
-    )";
-
-        sqlite3_stmt *stmt = nullptr;                              // Prepared statement handle
+    
+        // Convert C++ Timestamps to IST string format matching the database
+        std::string start_str = core::utils::timestampToString(start_time);
+        std::string end_str = core::utils::timestampToString(end_time);
+    
+        logger->debug("Querying candles for {} ({}) between TEXT '{}' and '{}'",
+                       instrument_key, interval, start_str, end_str);
+    
+        // Prepare the SQL statement - Compare timestamps as TEXT
+        const char* sql = R"(
+            SELECT timestamp, open, high, low, close, volume -- No open_interest
+            FROM historical_candles
+            WHERE instrument_key = ?          -- Placeholder 1
+              AND interval = ?                -- Placeholder 2
+              AND timestamp >= ?              -- Placeholder 3 (compare as TEXT)
+              AND timestamp <= ?              -- Placeholder 4 (compare as TEXT)
+            ORDER BY timestamp ASC;
+        )";
+    
+        sqlite3_stmt *stmt = nullptr; // Prepared statement handle
         int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr); // Prepare statement
-
-        if (rc != SQLITE_OK)
-        {
-            core::logging::getLogger()->error("Failed to prepare SQL statement [{}]: {}", rc, sqlite3_errmsg(db_));
+    
+        if (rc != SQLITE_OK) {
+            logger->error("Failed to prepare SQL statement (text compare) [{}]: {}", rc, sqlite3_errmsg(db_));
             sqlite3_finalize(stmt); // Finalize even if prepare failed
-            return candles;         // Return empty
+            return candles; // Return empty
+        } else {
+             logger->trace("Successfully prepared SQL statement for text comparison.");
         }
-
+    
         // Bind parameters
         // Index is 1-based
         sqlite3_bind_text(stmt, 1, instrument_key.c_str(), -1, SQLITE_STATIC);
         sqlite3_bind_text(stmt, 2, interval.c_str(), -1, SQLITE_STATIC);
-        // Bind start/end times as INTEGER (Unix epoch seconds)
-        sqlite3_bind_int64(stmt, 3, static_cast<sqlite3_int64>(start_epoch));
-        sqlite3_bind_int64(stmt, 4, static_cast<sqlite3_int64>(end_epoch));
-
+        // Bind start/end times as TEXT strings (in matching +05:30 format)
+        sqlite3_bind_text(stmt, 3, start_str.c_str(), -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 4, end_str.c_str(), -1, SQLITE_STATIC);
+    
         // Execute the statement step-by-step and fetch rows
-        core::logging::getLogger()->trace("Executing prepared statement for candle query...");
-        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
-        {
+        int row_count = 0;
+        logger->trace("Starting sqlite3_step loop for candle query...");
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            row_count++;
+            logger->trace("Processing row {}", row_count);
             // A row of data is available
-            try
-            {
+            try {
                 core::Candle candle;
-
                 // Retrieve data by column index (0-based)
-
-                // Column 0: timestamp (Read as TEXT, parse using utils)
                 const unsigned char *ts_text = sqlite3_column_text(stmt, 0);
-                if (ts_text)
-                {
-                    core::logging::getLogger()->trace("Raw timestamp string from DB: {}", reinterpret_cast<const char *>(ts_text));
-                    // Assuming stringToTimestamp can handle the "+05:30" offset correctly
-                    // If not, stringToTimestamp might need adjustment.
-                    candle.timestamp = core::utils::stringToTimestamp(reinterpret_cast<const char *>(ts_text));
-                }
-                else
-                {
-                    core::logging::getLogger()->warn("NULL timestamp found in query result, skipping row.");
-                    continue; // Skip this row if timestamp is essential
-                }
-
-                // Read other columns as before (indexes shifted by 1 compared to original SELECT with OI)
-                candle.open = sqlite3_column_double(stmt, 1);  // Index 1
-                candle.high = sqlite3_column_double(stmt, 2);  // Index 2
-                candle.low = sqlite3_column_double(stmt, 3);   // Index 3
-                candle.close = sqlite3_column_double(stmt, 4); // Index 4
-                candle.volume = sqlite3_column_int64(stmt, 5); // Index 5
-                candle.open_interest = std::nullopt;           // No OI column selected
-
+                if (ts_text) {
+                    logger->trace("Raw timestamp string from DB: {}", reinterpret_cast<const char*>(ts_text));
+                    candle.timestamp = core::utils::stringToTimestamp(reinterpret_cast<const char*>(ts_text));
+                } else {
+                     logger->warn("NULL timestamp found in query result (row {}), skipping row.", row_count);
+                     continue; // Skip this row if timestamp is essential
+                 }
+    
+                candle.open = sqlite3_column_double(stmt, 1);
+                candle.high = sqlite3_column_double(stmt, 2);
+                candle.low = sqlite3_column_double(stmt, 3);
+                candle.close = sqlite3_column_double(stmt, 4);
+                candle.volume = sqlite3_column_int64(stmt, 5);
+                candle.open_interest = std::nullopt;
+    
                 candles.push_back(candle);
+    
+            } catch (const std::exception& e) {
+                 logger->error("Error processing row data (row approx {}): {}", row_count, e.what());
+                 // Continue to next row on processing error? Or break? Let's continue for now.
             }
-            catch (const std::exception &e)
-            {
-                core::logging::getLogger()->error("Error processing row data: {}", e.what());
-                // Decide whether to skip row or stop processing
-            }
+        } // End while loop
+    
+        logger->trace("Finished sqlite3_step loop. Final rc = {} ({}), Total rows processed in loop = {}",
+                      rc, (rc == SQLITE_DONE ? "SQLITE_DONE" : "OTHER"), row_count);
+    
+        if (rc != SQLITE_DONE) {
+            logger->error("Error stepping through query results [{}]: {}", rc, sqlite3_errmsg(db_));
+        } else {
+             logger->debug("Finished processing query results. Successfully parsed {} candles.", candles.size());
         }
-
-        if (rc != SQLITE_DONE)
-        {
-            // sqlite3_step finished with an error other than completing successfully
-            core::logging::getLogger()->error("Error stepping through query results [{}]: {}", rc, sqlite3_errmsg(db_));
-        }
-        else
-        {
-            core::logging::getLogger()->debug("Finished processing query results. Found {} candles.", candles.size());
-        }
-
+    
         // Finalize the statement to release resources
         sqlite3_finalize(stmt);
-
+    
         return candles;
     }
 

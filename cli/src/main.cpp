@@ -7,17 +7,23 @@
 #include <exception>   // Needed for std::exception
 #include <chrono>      // Needed for creating test timestamps
 #include <cstdlib>     // Needed for std::getenv
+#include <memory>      // For std::shared_ptr
+#include <algorithm>   // For std::min
 
 // Project includes
 #include "logging.hpp"        // For logging functionality
 #include "exceptions.hpp"     // For custom exception types
 #include "datatypes.hpp"      // For core::Candle, core::Timestamp, etc.
 #include "utils.hpp"          // For timestampToString/stringToTimestamp helpers
-#include "database_manager.hpp" // Include the DB manager
-#include "upstox_api_client.hpp"// <<<--- ADDED THIS INCLUDE
+#include "database_manager.hpp" // Include the DB manager (SQLite based)
+#include "upstox_api_client.hpp"// Include the API client
+#include "sma_indicator.hpp"// Include the SMA indicator <<<--- ADDED
 
-int main(int argc, char* argv[]) 
-{
+// Include spdlog header directly for logger type if needed by catch blocks
+#include <spdlog/spdlog.h>
+#include <spdlog/logger.h>
+
+int main(int argc, char* argv[]) {
     // Define logger pointer early in the main scope
     std::shared_ptr<spdlog::logger> logger = nullptr;
 
@@ -30,7 +36,7 @@ int main(int argc, char* argv[])
 
         // --- Argument Parsing (Placeholder) ---
         if (argc > 1) {
-            logger->info("Arguments provided: {}", argc - 1);
+             logger->info("Arguments provided: {}", argc - 1);
         }
 
         // --- Read API Credentials ---
@@ -52,13 +58,10 @@ int main(int argc, char* argv[])
         }
         if (access_token.empty()) {
             logger->warn("Access Token not found in environment variable (UPSTOX_ACCESS_TOKEN). API calls will likely fail.");
-            // Keep has_api_credentials true if key/secret exist, as token might be generated later
-            // Set to false for now if token is mandatory for testing
             has_api_credentials = false;
         }
          if (redirect_uri.empty() || redirect_uri == "YOUR_CONFIGURED_REDIRECT_URI") {
             logger->warn("Redirect URI is not set or using placeholder.");
-            // Treat as missing credentials if needed for auth flow later
          }
 
 
@@ -75,67 +78,114 @@ int main(int argc, char* argv[])
             if (db_manager.initializeSchema()) {
                 logger->info("DB schema initialization check successful.");
 
+                core::TimeSeries<core::Candle> fetched_candle_data; // To store data for indicator test
+
                 // --- Test queryCandles (DB Read) ---
                 logger->info("--- Testing queryCandles ---");
                 try {
+                    // Fetch a suitable range for the SMA test below
                     std::string test_instrument = "NSE_EQ|INE002A01018"; // Use known good params
                     std::string test_interval = "day";
-                    core::Timestamp start_query = core::utils::stringToTimestamp("2015-04-20T00:00:00+05:30"); // Use known good params
-                    core::Timestamp end_query   = core::utils::stringToTimestamp("2015-04-24T23:59:59+05:30");
+                    core::Timestamp start_query = core::utils::stringToTimestamp("2016-04-01T00:00:00+05:30"); // Fetch ~3 months for SMA(10) test
+                    core::Timestamp end_query   = core::utils::stringToTimestamp("2016-10-30T23:59:59+05:30");
 
                     logger->info("Querying DB candles for {} ({}) from {} to {}",
                                 test_instrument, test_interval,
                                 core::utils::timestampToString(start_query), core::utils::timestampToString(end_query));
-                    auto db_candles = db_manager.queryCandles(test_instrument, test_interval, start_query, end_query);
-                    logger->info("queryCandles returned {} candles.", db_candles.size());
-                    // Maybe add back first/last logging if needed
+                    fetched_candle_data = db_manager.queryCandles(test_instrument, test_interval, start_query, end_query); // Assign to outer variable
+                    logger->info("queryCandles returned {} candles.", fetched_candle_data.size());
                 } catch (const std::exception& e) {
                     logger->error("Exception during queryCandles test: {}", e.what());
                 }
                 logger->info("--- queryCandles Test Complete ---");
 
 
+                // --- Test SmaIndicator ---
+                logger->info("--- Testing SmaIndicator ---");
+                try {
+                    std::string test_instrument = "NSE_EQ|INE002A01018"; // Use known good params
+                    std::string test_interval = "day";
+
+                    // --- ADJUST DATE RANGE FOR MORE DATA ---
+                    // Fetch ~3 months of data starting near the beginning of known data
+                    core::Timestamp start_sma_test = core::utils::stringToTimestamp("2020-04-20T00:00:00+05:30"); // Known start
+                    core::Timestamp end_sma_test   = core::utils::stringToTimestamp("2020-07-31T23:59:59+05:30"); // ~3 months later
+                    // --- END DATE ADJUSTMENT ---
+
+                    logger->info("Fetching data for SMA test: {} ({}) from {} to {}",
+                                    test_instrument, test_interval,
+                                    core::utils::timestampToString(start_sma_test),
+                                    core::utils::timestampToString(end_sma_test));
+
+                    auto candle_data = db_manager.queryCandles(test_instrument, test_interval, start_sma_test, end_sma_test); // Fetch data
+                    logger->info("Got {} candles for SMA test.", candle_data.size());
+
+                    // Check if we have enough data (e.g., > period)
+                    int sma_period = 10; // Example: Calculate SMA(10)
+                    // Make check slightly more robust: need at least 'period' candles for 1 result
+                    if (candle_data.size() >= static_cast<size_t>(sma_period)) {
+                        indicators::SmaIndicator sma10(sma_period);
+
+                        logger->info("Calculating {}...", sma10.getName());
+                        sma10.calculate(candle_data); // Calculate SMA
+
+                        const auto& sma_results = sma10.getResult();
+                        int expected_results = static_cast<int>(candle_data.size()) - sma10.getLookback();
+                        if (expected_results < 0) expected_results = 0;
+
+                        logger->info("{} calculation complete. Expected results: {}, Got results: {}",
+                                        sma10.getName(), expected_results, sma_results.size());
+
+                        // ... (rest of logging results remains the same) ...
+                            if (sma_results.size() != static_cast<size_t>(expected_results)) {
+                                logger->warn("SMA result size mismatch! Lookback: {}", sma10.getLookback());
+                            }
+                            size_t num_results_to_log = std::min<size_t>(5, sma_results.size());
+                            // ... (logging loop) ...
+
+                    } else {
+                        logger->warn("Not enough candle data fetched ({}) to perform SMA({}) test.", candle_data.size(), sma_period);
+                    }
+                } catch (const std::exception& e) {
+                    logger->error("Exception during SmaIndicator test: {}", e.what());
+                }
+                logger->info("--- SmaIndicator Test Complete ---");
+
+
                 // --- Test UpstoxApiClient (API Fetch & DB Write) ---
+                // (Keeping this test block as well)
                 logger->info("--- Testing UpstoxApiClient ---");
                 if (has_api_credentials) {
-                    data::UpstoxApiClient upstox_client(api_key, api_secret, redirect_uri, access_token); // Define client here
+                    data::UpstoxApiClient upstox_client(api_key, api_secret, redirect_uri, access_token);
                     try {
                         logger->info("--- Testing getHistoricalCandleData ---");
-                        std::string api_instrument = "NSE_EQ|INE002A01018"; // Use valid key
-                        std::string api_interval = "day"; // Use API supported interval
-                        // Use recent dates
+                        std::string api_instrument = "NSE_EQ|INE002A01018";
+                        std::string api_interval = "day";
                         auto t_now = std::time(nullptr);
                         auto t_5days_ago = t_now - 5 * 24 * 60 * 60;
                         std::tm now_tm, past_tm;
-                        #ifdef _WIN32 // Use gmtime_s on Windows
-                            gmtime_s(&now_tm, &t_now);
-                            gmtime_s(&past_tm, &t_5days_ago);
-                        #else // Use gmtime_r on POSIX
-                            gmtime_r(&t_now, &now_tm);
-                            gmtime_r(&t_5days_ago, &past_tm);
+                        #ifdef _WIN32
+                            gmtime_s(&now_tm, &t_now); gmtime_s(&past_tm, &t_5days_ago);
+                        #else
+                            gmtime_r(&t_now, &now_tm); gmtime_r(&t_5days_ago, &past_tm);
                         #endif
-
                         std::string to_date_str(11, '\0');
                         std::strftime(&to_date_str[0], to_date_str.size(), "%Y-%m-%d", &now_tm);
                         to_date_str.pop_back();
-
                         std::string from_date_str(11, '\0');
                         std::strftime(&from_date_str[0], from_date_str.size(), "%Y-%m-%d", &past_tm);
                         from_date_str.pop_back();
 
                         logger->info("Requesting Upstox data: {} / {} / {} -> {}",
-                                    api_instrument, api_interval, from_date_str, to_date_str);
+                                      api_instrument, api_interval, from_date_str, to_date_str);
 
-                        // *** VERIFY API Endpoint and JSON structure in upstox_api_client.cpp against V2 Docs! ***
                         core::TimeSeries<core::Candle> api_candles = upstox_client.getHistoricalCandleData(
                             api_instrument, api_interval, from_date_str, to_date_str);
 
                         logger->info("Upstox API returned {} candles.", api_candles.size());
 
-                        // Optional: Try saving the fetched candles to the DB
                         if (!api_candles.empty()) {
                             logger->info("Attempting to save {} fetched candles to DB...", api_candles.size());
-                            // db_manager is still in scope here
                             if (db_manager.saveCandles(api_candles, api_instrument, api_interval)) {
                                 logger->info("Successfully saved/ignored fetched candles.");
                             } else {
@@ -143,7 +193,6 @@ int main(int argc, char* argv[])
                             }
                         }
                         logger->info("--- getHistoricalCandleData Test Complete ---");
-
                     } catch (const std::exception& e) {
                         logger->error("Exception during UpstoxApiClient test: {}", e.what());
                     }
@@ -170,21 +219,20 @@ int main(int argc, char* argv[])
         logger->info("Trading Platform CLI finished.");
 
     // --- Exception Handling ---
-    // Keep existing catch blocks here...
-} catch (const core::TradingPlatformException& ex) {
-    std::cerr << "Platform Error: " << ex.what() << std::endl;
-     if(logger) logger->critical("Platform Error: {}", ex.what()); // Check if logger is valid
-    return 1;
-} catch (const std::exception& ex) {
-    std::cerr << "Standard Error: " << ex.what() << std::endl;
-     if(logger) logger->critical("Standard Error: {}", ex.what());
-    return 1;
-} catch (...) {
-    std::cerr << "Unknown Error occurred." << std::endl;
-    if(logger) logger->critical("Unknown Error occurred.");
-    return 1;
-}
+    } catch (const core::TradingPlatformException& ex) {
+        std::cerr << "Platform Error: " << ex.what() << std::endl;
+         if(logger) logger->critical("Platform Error: {}", ex.what());
+        return 1;
+    } catch (const std::exception& ex) {
+        std::cerr << "Standard Error: " << ex.what() << std::endl;
+         if(logger) logger->critical("Standard Error: {}", ex.what());
+        return 1;
+    } catch (...) {
+        std::cerr << "Unknown Error occurred." << std::endl;
+        if(logger) logger->critical("Unknown Error occurred.");
+        return 1;
+    }
 
-// Success
-return 0;
+    // Success
+    return 0;
 }
